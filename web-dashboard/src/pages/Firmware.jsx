@@ -207,11 +207,19 @@ function CopyBtn({ text }) {
 function FirmwareCard({ fw }) {
   const [expanded, setExpanded] = useState(false)
 
-  const handleDownload = () => {
-    /* In production: fetch from /firmware/<file> on Render */
+  const handleDownloadBin = () => {
     const link = document.createElement('a')
     link.href = `/firmware/${fw.file}`
     link.download = fw.file
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+  }
+
+  const handleDownloadZip = () => {
+    const link = document.createElement('a')
+    link.href = `/firmware/esp32-firmware.zip`
+    link.download = `ykp_${fw.id}_v1.2.1_source.zip`
     document.body.appendChild(link)
     link.click()
     document.body.removeChild(link)
@@ -272,16 +280,22 @@ function FirmwareCard({ fw }) {
       </div>
 
       {/* Download buttons */}
-      <div className="fw-btn-group">
-        <button className="btn btn-primary" onClick={handleDownload}>
-          <Download size={16} />
-          Download .bin
-        </button>
+      <div className="fw-btn-group" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button className="btn btn-primary" onClick={handleDownloadZip} style={{ flex: 1, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6, fontSize: 12 }}>
+            📦 Source (.zip)
+          </button>
+          <button className="btn btn-secondary" onClick={handleDownloadBin} style={{ flex: 1, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6, fontSize: 12 }}>
+            <Download size={14} />
+            Download .bin
+          </button>
+        </div>
         <button
-          className="btn btn-secondary"
+          className="btn btn-secondary btn-sm"
           onClick={() => setExpanded(e => !e)}
+          style={{ width: '100%', padding: '6px' }}
         >
-          {expanded ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+          {expanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
           {expanded ? 'Less Info' : 'Changelog + Features'}
         </button>
       </div>
