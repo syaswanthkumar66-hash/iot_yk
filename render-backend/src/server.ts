@@ -23,11 +23,17 @@ app.use(express.json({ limit: '10mb' }))
 
 // ── Health check (Render uptime monitor) ──
 app.get('/health', (_req, res) => {
+  const hasSupabaseUrl = !!process.env.SUPABASE_URL
+  const hasSupabaseKey = !!process.env.SUPABASE_SERVICE_KEY
+  const configured = hasSupabaseUrl && hasSupabaseKey
+
   res.json({
-    status:    'ok',
+    status:    configured ? 'ok' : 'warning',
     service:   'ykp-router',
     version:   'v5',
     timestamp: new Date().toISOString(),
+    database:  configured ? 'connected' : 'error: SUPABASE_URL or SUPABASE_SERVICE_KEY is missing on Render settings!',
+    instructions: configured ? undefined : 'Please go to your Render Dashboard -> ykp-router -> Environment, and add SUPABASE_URL and SUPABASE_SERVICE_KEY.'
   })
 })
 

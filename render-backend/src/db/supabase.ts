@@ -2,11 +2,11 @@ import { createClient, SupabaseClient } from '@supabase/supabase-js'
 import dotenv from 'dotenv'
 dotenv.config()
 
-const supabaseUrl  = process.env.SUPABASE_URL  ?? ''
-const supabaseKey  = process.env.SUPABASE_SERVICE_KEY ?? ''
+const supabaseUrl  = process.env.SUPABASE_URL  || 'https://placeholder.supabase.co'
+const supabaseKey  = process.env.SUPABASE_SERVICE_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.placeholder'
 
-if (!supabaseUrl || !supabaseKey) {
-  console.error('[supabase] SUPABASE_URL and SUPABASE_SERVICE_KEY must be set')
+if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_KEY) {
+  console.warn('[supabase] WARNING: SUPABASE_URL or SUPABASE_SERVICE_KEY environment variables are not set. Using placeholder credentials. Database operations will fail.')
 }
 
 export const supabase: SupabaseClient = createClient(supabaseUrl, supabaseKey, {
