@@ -235,7 +235,9 @@ body::after {
   flex-shrink: 0;
 }
 
-.status-dot.offline { background: var(--danger); box-shadow: 0 0 8px var(--danger); }
+.status-dot.offline  { background: var(--danger); box-shadow: 0 0 8px var(--danger); }
+.status-dot.waking   { background: var(--warning); box-shadow: 0 0 8px var(--warning); }
+.status-dot.checking { background: var(--secondary); box-shadow: 0 0 8px var(--secondary); }
 
 @keyframes pulse-dot {
   0%, 100% { opacity: 1; transform: scale(1); }

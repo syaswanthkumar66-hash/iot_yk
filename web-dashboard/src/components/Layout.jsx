@@ -1,23 +1,25 @@
+import { useState, useEffect } from 'react'
 import { NavLink, Outlet, useLocation } from 'react-router-dom'
 import {
   LayoutDashboard, Cpu, Download, Activity, Users,
-  Zap, Upload, Radio, Server, ExternalLink
+  Zap, Upload, Server
 } from 'lucide-react'
+import { getBackendUrl, setBackendUrl } from '../lib/api'
 
 const NAV = [
   {
     section: 'Main',
     items: [
       { to: '/dashboard',  icon: LayoutDashboard, label: 'Dashboard',  badge: null },
-      { to: '/devices',    icon: Cpu,             label: 'Devices',    badge: '8'  },
+      { to: '/devices',    icon: Cpu,             label: 'Devices',    badge: null },
       { to: '/health',     icon: Activity,        label: 'Health',     badge: null },
     ]
   },
   {
     section: 'Control',
     items: [
-      { to: '/groups',     icon: Users, label: 'Groups',     badge: '3'  },
-      { to: '/automation', icon: Zap,   label: 'Automation', badge: '5'  },
+      { to: '/groups',     icon: Users, label: 'Groups',     badge: null },
+      { to: '/automation', icon: Zap,   label: 'Automation', badge: null },
     ]
   },
   {
@@ -42,6 +44,52 @@ const PAGE_TITLES = {
 export default function Layout() {
   const location = useLocation()
   const page = PAGE_TITLES[location.pathname] || { title: 'YKP Dashboard', sub: '' }
+
+  const [serverUrl, setServerUrl] = useState(getBackendUrl())
+  const [status, setStatus] = useState('checking') // 'checking' | 'connected' | 'offline' | 'waking'
+
+  const checkServerStatus = async () => {
+    try {
+      const controller = new AbortController()
+      const id = setTimeout(() => controller.abort(), 4000) // 4s timeout
+
+      const res = await fetch(`${getBackendUrl()}/health`, { signal: controller.signal })
+      clearTimeout(id)
+
+      if (res.ok) {
+        setStatus('connected')
+      } else {
+        setStatus('waking') // Server is online but returned error, or spin-up phase
+      }
+    } catch (err) {
+      // Aborted means server did not respond in 4s (likely sleeping/spinning up on Render free tier)
+      if (err.name === 'AbortError') {
+        setStatus('waking')
+      } else {
+        setStatus('offline')
+      }
+    }
+  }
+
+  useEffect(() => {
+    checkServerStatus()
+    const interval = setInterval(checkServerStatus, 10000) // check every 10 seconds
+    return () => clearInterval(interval)
+  }, [serverUrl])
+
+  const handleStatusClick = () => {
+    const newUrl = prompt(
+      'Customize YKP Router Backend URL:\n(Leave empty to reset to default Render deployment)',
+      getBackendUrl()
+    )
+    if (newUrl !== null) {
+      setBackendUrl(newUrl)
+      setServerUrl(getBackendUrl())
+      setStatus('checking')
+      // Refresh window to reload all data hooks with the new URL
+      window.location.reload()
+    }
+  }
 
   return (
     <div className="layout">
@@ -77,12 +125,22 @@ export default function Layout() {
         </nav>
 
         <div className="sidebar-footer">
-          <div className="server-status">
-            <div className="status-dot"></div>
-            <span>YKP Router · Connected</span>
+          <div 
+            className="server-status clickable" 
+            onClick={handleStatusClick}
+            title="Click to customize Render Backend URL"
+            style={{ cursor: 'pointer', padding: '6px 8px', borderRadius: '6px', transition: 'background 0.2s' }}
+          >
+            <div className={`status-dot ${status}`}></div>
+            <span>
+              {status === 'checking' && 'Pinging Router...'}
+              {status === 'connected' && 'YKP Router · Connected'}
+              {status === 'waking' && 'Waking up Web Worker...'}
+              {status === 'offline' && 'Router Offline · Click to edit'}
+            </span>
           </div>
           <div style={{ marginTop: 10, fontSize: 11, color: 'var(--text-muted)' }}>
-            <span>render.com · ykp-router</span>
+            <span>{serverUrl.replace(/^https?:\/\//, '')}</span>
           </div>
         </div>
       </aside>
@@ -96,7 +154,7 @@ export default function Layout() {
           </div>
           <div className="topbar-right">
             <a
-              href="https://ykp-router.onrender.com/health"
+              href={`${getBackendUrl()}/health`}
               target="_blank"
               rel="noopener noreferrer"
               className="topbar-btn"
