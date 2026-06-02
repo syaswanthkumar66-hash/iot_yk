@@ -3,6 +3,11 @@ import { supabase } from '../db/supabase'
 
 const router = Router()
 
+/** GET /api/health — API health check */
+router.get('/', (_req: Request, res: Response) => {
+  res.json({ message: 'Health API is running. Use /:deviceId to get specific device health.' })
+})
+
 /** GET /api/health/:deviceId — latest snapshot */
 router.get('/:deviceId', async (req: Request, res: Response) => {
   try {
