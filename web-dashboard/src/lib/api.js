@@ -1,5 +1,33 @@
 export function getBackendUrl() {
-  return localStorage.getItem('VITE_YKP_SERVER_URL') || import.meta.env.VITE_YKP_SERVER_URL || 'https://iot-yk.onrender.com'
+  // 1. Check user override in localStorage
+  const customUrl = localStorage.getItem('VITE_YKP_SERVER_URL')
+  if (customUrl) return customUrl.replace(/\/$/, '')
+
+  // 2. Check build-time env variable
+  if (import.meta.env.VITE_YKP_SERVER_URL) {
+    return import.meta.env.VITE_YKP_SERVER_URL.replace(/\/$/, '')
+  }
+
+  // 3. Render / Production Real Auto Fetch:
+  // Detect if we are running in a browser
+  if (typeof window !== 'undefined') {
+    const origin = window.location.origin
+    // If it's the Vite dev port, fall back to backend default local port (10000)
+    if (origin.includes('localhost:5173') || origin.includes('127.0.0.1:5173')) {
+      return 'http://localhost:10000'
+    }
+    // If hosted on a cloud environment or custom domain, dynamically auto-fetch the origin!
+    return origin
+  }
+
+  // Final default fallback
+  return 'https://iot-yk.onrender.com'
+}
+
+export function getWebSocketUrl() {
+  const backendUrl = getBackendUrl()
+  // Dynamically map http/https -> ws/wss
+  return backendUrl.replace(/^http/, 'ws') + '/ws'
 }
 
 export function setBackendUrl(url) {

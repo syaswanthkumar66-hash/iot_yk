@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { Download, Shield, CheckCircle, Info, Copy, Check,
          ChevronDown, ChevronUp, ExternalLink, Terminal } from 'lucide-react'
+import { getWebSocketUrl } from '../lib/api'
 
 /* ── Firmware manifest ── */
 const FIRMWARE = [
@@ -459,7 +460,7 @@ export default function Firmware() {
               { key: 'device_id',    value: 'SW001',                                   req: true  },
               { key: 'device_type',  value: 'switch / sensor / motor / gateway',        req: true  },
               { key: 'device_name',  value: '"Living Room Switch"',                    req: false },
-              { key: 'server_url',   value: 'wss://ykp-router.onrender.com/ws',        req: true  },
+              { key: 'server_url',   value: getWebSocketUrl(),                         req: true  },
               { key: 'wifi_ssid',    value: 'Your WiFi SSID',                          req: true  },
               { key: 'wifi_password',value: 'Your WiFi Password',                      req: true  },
             ].map(r => (

@@ -4,6 +4,8 @@ import cors from 'cors'
 import helmet from 'helmet'
 import http from 'http'
 import { WebSocketServer } from 'ws'
+import path from 'path'
+import fs from 'fs'
 import { startYkpRouter } from './router/ykp-router'
 import devicesApi from './api/devices'
 import healthApi  from './api/health'
@@ -37,10 +39,34 @@ app.get('/health', (_req, res) => {
   })
 })
 
+// ── Serve Static Web Dashboard if built ────
+const distPath = path.join(__dirname, '../../web-dashboard/dist')
+if (fs.existsSync(distPath)) {
+  console.log(`[ykp-router] Serving static web dashboard from: ${distPath}`)
+  app.use(express.static(distPath))
+} else {
+  console.warn(`[ykp-router] Static web dashboard not found at: ${distPath}. Running in API-only mode.`)
+}
+
 // ── REST API routes ────────────────────────
 app.use('/api/devices', devicesApi)
 app.use('/api/health',  healthApi)
 app.use('/api/ota',     otaApi)
+
+// ── SPA routing fallback ──
+app.get('*', (req, res, next) => {
+  // If it's an API, WebSocket, or health check route, don't fallback to index.html
+  if (req.path.startsWith('/api') || req.path.startsWith('/ws') || req.path === '/health') {
+    return next()
+  }
+  
+  const indexPath = path.join(distPath, 'index.html')
+  if (fs.existsSync(indexPath)) {
+    res.sendFile(indexPath)
+  } else {
+    next()
+  }
+})
 
 // ── 404 fallback ───────────────────────────
 app.use((_req, res) => {
