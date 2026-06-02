@@ -1,6 +1,6 @@
 import { WebSocket, WebSocketServer } from 'ws'
 import { IncomingMessage } from 'http'
-import { parsePacket } from '../packet/parser'
+import { parsePacket, findTlv } from '../packet/parser'
 import { buildPacket, TlvBuilder } from '../packet/builder'
 import { sessionManager } from './session-manager'
 import { registerConnection, removeConnection } from './route-engine'
@@ -44,7 +44,13 @@ export function startYkpRouter(wss: WebSocketServer): void {
             await upsertDevice(deviceId, { last_seen: new Date().toISOString() })
 
             // Extract client ephemeral public key from payload
-            const clientPubKey = pkt.payload.subarray(3 + 1, 3 + 1 + 65) // rough TLV parse
+            const pubKeyEntry = findTlv(pkt.payload, TlvType.PUBLIC_KEY)
+            if (!pubKeyEntry) {
+              console.error(`[auth] No public key TLV found in HELLO from ${deviceId}`)
+              ws.close(4002, 'No public key TLV')
+              return
+            }
+            const clientPubKey = pubKeyEntry.value
 
             // Generate server ephemeral key pair
             const { privateKey, publicKey } = generateEphemeralKeyPair()

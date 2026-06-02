@@ -19,7 +19,7 @@ export function encrypt(
   const iv = Buffer.alloc(IV_LEN)
   iv.writeUInt32BE(sessionId, 0)
   iv.writeUInt32BE(packetId,  4)
-  crypto.randomFillSync(iv, 8, 4)   // 4 random bytes
+  iv.writeUInt32BE(packetId,  8) // Deterministic, unique per packet to prevent IV reuse
 
   const cipher = crypto.createCipheriv('aes-256-gcm', sessionKey, iv)
   cipher.setAAD(aad)
@@ -45,8 +45,7 @@ export function decrypt(
   const iv = Buffer.alloc(IV_LEN)
   iv.writeUInt32BE(sessionId, 0)
   iv.writeUInt32BE(packetId,  4)
-  // Note: the 4-byte random suffix was embedded in the packet;
-  // for full implementation, extract iv[8..11] from the payload prefix.
+  iv.writeUInt32BE(packetId,  8) // Match deterministic IV used in encryption
 
   const decipher = crypto.createDecipheriv('aes-256-gcm', sessionKey, iv)
   decipher.setAAD(aad)
