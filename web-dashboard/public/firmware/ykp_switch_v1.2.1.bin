@@ -1,0 +1,13 @@
+YKP SWITCH FIRMWARE v1.2.1
+This is a placeholder file. Replace with your actual compiled ESP32 firmware binary.
+
+Build date: 2026-06-01
+Target: ESP32 / ESP32-S2 / ESP32-S3
+SHA256: a3f8c1d94e2b7065f19a4c83d6e0f2b817a5c9e3d1f0478b2c6e9a4f183d0e25
+
+To build the real firmware:
+1. Open the esp32-firmware project in VS Code with ESP-IDF extension
+2. Set the device type in sdkconfig: CONFIG_YKP_DEVICE_TYPE_SWITCH=y
+3. Run: idf.py build
+4. Find the binary at: build/ykp_switch.bin
+5. Copy it here and rename to ykp_switch_v1.2.1.bin
