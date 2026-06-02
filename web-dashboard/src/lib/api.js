@@ -16,11 +16,13 @@ export function getBackendUrl() {
     if (origin.includes('localhost:5173') || origin.includes('127.0.0.1:5173')) {
       return 'http://localhost:10000'
     }
-    // If hosted on a cloud environment or custom domain, dynamically auto-fetch the origin!
-    return origin
+    // If frontend is hosted on the SAME origin as the backend (unified deployment)
+    if (origin.includes('iot-yk.onrender.com')) {
+      return origin
+    }
   }
 
-  // Final default fallback
+  // Default fallback for the separate static site: point to the live Render backend worker
   return 'https://iot-yk.onrender.com'
 }
 
