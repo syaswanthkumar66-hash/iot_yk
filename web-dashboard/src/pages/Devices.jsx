@@ -1,29 +1,98 @@
-import { useState } from 'react'
-import { Cpu, Wifi, Search, RefreshCw, ToggleLeft, ToggleRight, Settings } from 'lucide-react'
+import { useState, useEffect } from 'react'
+import { Cpu, Wifi, Search, RefreshCw, ToggleLeft, ToggleRight } from 'lucide-react'
+import { fetchDevices, sendCommand } from '../lib/api'
+import { supabase } from '../lib/supabase'
 
-const DEVICES = [
-  { id: 'SW001', name: 'Living Room Switch', type: 'switch',  emoji: '🔌', online: true,  state: 'ON',   rssi: -62, heap: 186000, cpu: 3.2, fw: 'v1.2.1', ip: '192.168.1.45' },
-  { id: 'SW002', name: 'Bedroom Switch',     type: 'switch',  emoji: '🔌', online: true,  state: 'OFF',  rssi: -70, heap: 180000, cpu: 2.8, fw: 'v1.2.1', ip: '192.168.1.46' },
-  { id: 'SW003', name: 'Kitchen Switch',     type: 'switch',  emoji: '🔌', online: false, state: '—',    rssi: -85, heap: 0,      cpu: 0,   fw: 'v1.2.0', ip: '—' },
-  { id: 'SN001', name: 'Motion Sensor',      type: 'sensor',  emoji: '📡', online: true,  state: 'IDLE', rssi: -58, heap: 192000, cpu: 1.5, fw: 'v1.2.1', ip: '192.168.1.47' },
-  { id: 'SN002', name: 'Temp & Humidity',    type: 'sensor',  emoji: '🌡️', online: true,  state: 'IDLE', rssi: -65, heap: 188000, cpu: 2.1, fw: 'v1.2.1', ip: '192.168.1.48' },
-  { id: 'GW001', name: 'Main Gateway',       type: 'gateway', emoji: '🔀', online: true,  state: 'MESH', rssi: -45, heap: 220000, cpu: 8.3, fw: 'v1.2.0', ip: '192.168.1.10' },
-  { id: 'MC001', name: 'Fan Motor',          type: 'motor',   emoji: '⚙️', online: true,  state: 'ON',   rssi: -72, heap: 174000, cpu: 4.1, fw: 'v1.1.2', ip: '192.168.1.51' },
-  { id: 'SN003', name: 'Door Sensor',        type: 'sensor',  emoji: '🚪', online: false, state: '—',    rssi: -90, heap: 0,      cpu: 0,   fw: 'v1.1.0', ip: '—' },
-]
+const DEVICE_EMOJI = {
+  switch: '🔌',
+  sensor: '📡',
+  gateway: '🔀',
+  motor: '⚙️'
+}
 
 export default function Devices() {
+  const [devices, setDevices] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState(null)
   const [search, setSearch] = useState('')
   const [filter, setFilter] = useState('all')
-  const [states, setStates] = useState(Object.fromEntries(DEVICES.map(d => [d.id, d.state])))
 
-  const toggle = (id) => {
-    setStates(s => ({ ...s, [id]: s[id] === 'ON' ? 'OFF' : 'ON' }))
+  const loadDevices = async () => {
+    try {
+      setLoading(true)
+      const data = await fetchDevices()
+      setDevices(data)
+      setError(null)
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setLoading(false)
+    }
   }
 
-  const filtered = DEVICES.filter(d => {
-    const matchType = filter === 'all' || d.type === filter
-    const matchSearch = d.name.toLowerCase().includes(search.toLowerCase()) || d.id.toLowerCase().includes(search.toLowerCase())
+  useEffect(() => {
+    loadDevices()
+
+    // Subscribe to realtime database updates
+    const channel = supabase
+      .channel('devices-live-state')
+      .on(
+        'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'devices' },
+        (payload) => {
+          const updated = payload.new
+          setDevices(prev =>
+            prev.map(d =>
+              d.device_id === updated.device_id ? { ...d, is_online: updated.is_online, ip_address: updated.ip_address, last_seen: updated.last_seen } : d
+            )
+          )
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'device_state' },
+        (payload) => {
+          const updated = payload.new
+          setDevices(prev =>
+            prev.map(d =>
+              d.device_id === updated.device_id ? { ...d, relay_state: updated.relay_state } : d
+            )
+          )
+        }
+      )
+      .subscribe()
+
+    return () => {
+      supabase.removeChannel(channel)
+    }
+  }, [])
+
+  const toggle = async (id, currentState) => {
+    const nextAction = currentState ? 2 : 1 // 1=ON (RELAY_ON), 2=OFF (RELAY_OFF)
+    // Optimistic local state update
+    setDevices(prev =>
+      prev.map(d =>
+        d.device_id === id ? { ...d, relay_state: !currentState } : d
+      )
+    )
+    try {
+      await sendCommand(id, 1, nextAction) // Service 1 (RELAY)
+    } catch (err) {
+      console.error('Command failed:', err)
+      // Revert state back on error
+      setDevices(prev =>
+        prev.map(d =>
+          d.device_id === id ? { ...d, relay_state: currentState } : d
+        )
+      )
+    }
+  }
+
+  const filtered = devices.filter(d => {
+    const matchType = filter === 'all' || d.device_type === filter
+    const matchSearch =
+      (d.device_name && d.device_name.toLowerCase().includes(search.toLowerCase())) ||
+      d.device_id.toLowerCase().includes(search.toLowerCase())
     return matchType && matchSearch
   })
 
@@ -37,12 +106,23 @@ export default function Devices() {
               onClick={() => setFilter(f)}
               className={`btn btn-sm ${filter === f ? 'btn-primary' : 'btn-secondary'}`}
               style={{ textTransform: 'capitalize' }}
-            >{f}</button>
+            >
+              {f}
+            </button>
           ))}
         </div>
         <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
           <div style={{ position: 'relative' }}>
-            <Search size={14} style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
+            <Search
+              size={14}
+              style={{
+                position: 'absolute',
+                left: 10,
+                top: '50%',
+                transform: 'translateY(-50%)',
+                color: 'var(--text-muted)'
+              }}
+            />
             <input
               className="input"
               style={{ paddingLeft: 32, width: 220 }}
@@ -51,77 +131,90 @@ export default function Devices() {
               onChange={e => setSearch(e.target.value)}
             />
           </div>
-          <button className="btn btn-secondary btn-sm">
+          <button onClick={loadDevices} className="btn btn-secondary btn-sm">
             <RefreshCw size={14} />Refresh
           </button>
         </div>
       </div>
 
-      <div className="grid-auto">
-        {filtered.map(d => (
-          <div key={d.id} className="device-card fade-in">
-            <div className="device-card-header">
-              <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                <div className="device-icon">{d.emoji}</div>
-                <div>
-                  <div className="device-id">{d.id}</div>
-                  <div className="device-name">{d.name}</div>
+      {loading ? (
+        <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '200px' }}>
+          <RefreshCw className="spin" size={24} style={{ color: 'var(--primary)' }} />
+          <span style={{ marginLeft: 10, color: 'var(--text-secondary)' }}>Loading live device array...</span>
+        </div>
+      ) : error ? (
+        <div className="alert-banner warning">
+          <span>Failed to connect to Render Worker: {error}</span>
+        </div>
+      ) : filtered.length === 0 ? (
+        <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '200px', flexDirection: 'column' }}>
+          <span style={{ fontSize: 32, marginBottom: 12 }}>📡</span>
+          <span style={{ color: 'var(--text-muted)' }}>No matching registered devices found.</span>
+        </div>
+      ) : (
+        <div className="grid-auto">
+          {filtered.map(d => (
+            <div key={d.device_id} className="device-card fade-in">
+              <div className="device-card-header">
+                <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                  <div className="device-icon">{DEVICE_EMOJI[d.device_type] || '⚡'}</div>
+                  <div>
+                    <div className="device-id">{d.device_id}</div>
+                    <div className="device-name">{d.device_name || 'Generic Device'}</div>
+                  </div>
                 </div>
+                <span className={`badge ${d.is_online ? 'online' : 'offline'}`}>
+                  {d.is_online ? 'Online' : 'Offline'}
+                </span>
               </div>
-              <span className={`badge ${d.online ? 'online' : 'offline'}`}>
-                {d.online ? 'Online' : 'Offline'}
-              </span>
-            </div>
 
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-              <span className={`tag ${d.type}`}>{d.type.toUpperCase()}</span>
-              <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-muted)' }}>{d.fw}</span>
-            </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+                <span className={`tag ${d.device_type}`}>{d.device_type.toUpperCase()}</span>
+                <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-muted)' }}>
+                  {d.firmware_ver || 'v1.0.0'}
+                </span>
+              </div>
 
-            <div style={{ marginBottom: 14 }}>
-              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4, textTransform: 'uppercase', letterSpacing: '0.5px', fontWeight: 600 }}>IP Address</div>
-              <div style={{ fontFamily: 'var(--font-mono)', fontSize: 13, color: 'var(--text-secondary)' }}>{d.ip}</div>
-            </div>
-
-            <div className="device-stats">
-              <div className="device-stat-item">
-                <div className="label">RSSI</div>
-                <div className="value" style={{ color: !d.online ? 'var(--text-muted)' : d.rssi < -80 ? 'var(--danger)' : d.rssi < -70 ? 'var(--warning)' : 'var(--success)' }}>
-                  {d.online ? `${d.rssi}` : '—'}
-                </div>
-              </div>
-              <div className="device-stat-item">
-                <div className="label">Heap</div>
-                <div className="value">{d.online ? `${Math.round(d.heap / 1024)}KB` : '—'}</div>
-              </div>
-              <div className="device-stat-item">
-                <div className="label">CPU</div>
-                <div className="value">{d.online ? `${d.cpu}%` : '—'}</div>
-              </div>
-              <div className="device-stat-item">
-                <div className="label">State</div>
-                <div className="value" style={{ color: states[d.id] === 'ON' ? 'var(--success)' : 'var(--text-muted)' }}>
-                  {states[d.id]}
-                </div>
-              </div>
-            </div>
-
-            {d.online && d.type === 'switch' && (
-              <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid var(--border)', display: 'flex', gap: 8 }}>
-                <button
-                  onClick={() => toggle(d.id)}
-                  className={`btn btn-sm w-full ${states[d.id] === 'ON' ? 'btn-danger' : 'btn-success'}`}
+              <div style={{ marginBottom: 14 }}>
+                <div
+                  style={{
+                    fontSize: 11,
+                    color: 'var(--text-muted)',
+                    marginBottom: 4,
+                    textTransform: 'uppercase',
+                    letterSpacing: '0.5px',
+                    fontWeight: 600
+                  }}
                 >
-                  {states[d.id] === 'ON'
-                    ? <><ToggleRight size={14} /> Turn OFF</>
-                    : <><ToggleLeft size={14} />  Turn ON</>
-                  }
-                </button>
+                  IP Address
+                </div>
+                <div style={{ fontFamily: 'var(--font-mono)', fontSize: 13, color: 'var(--text-secondary)' }}>
+                  {d.is_online && d.ip_address ? d.ip_address : '—'}
+                </div>
               </div>
-            )}
-          </div>
-        ))}
-      </div>
+
+              {d.is_online && d.device_type === 'switch' && (
+                <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid var(--border)', display: 'flex', gap: 8 }}>
+                  <button
+                    onClick={() => toggle(d.device_id, d.relay_state)}
+                    className={`btn btn-sm w-full ${d.relay_state ? 'btn-danger' : 'btn-success'}`}
+                  >
+                    {d.relay_state ? (
+                      <>
+                        <ToggleRight size={14} /> Turn OFF
+                      </>
+                    ) : (
+                      <>
+                        <ToggleLeft size={14} /> Turn ON
+                      </>
+                    )}
+                  </button>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   )
 }
