@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
-#include <netinet/in.h>
+#include "lwip/sockets.h"
 
 typedef void (*ykp_udp_rx_cb_t)(const uint8_t *data, uint16_t len,
                                  struct sockaddr_in *from);

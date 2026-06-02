@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
-#include <netinet/in.h>
+#include "lwip/sockets.h"
 
 void ykp_discovery_init(void);
 void ykp_discovery_start_task(void);

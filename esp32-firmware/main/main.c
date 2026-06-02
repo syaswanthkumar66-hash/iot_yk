@@ -13,6 +13,8 @@
 #include "esp_system.h"
 #include "esp_timer.h"
 #include "nvs_flash.h"
+#include "esp_netif.h"
+#include "esp_event.h"
 
 /* YKP modules */
 #include "nvs_config.h"

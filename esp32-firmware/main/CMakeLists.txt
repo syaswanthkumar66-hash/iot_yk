@@ -34,7 +34,7 @@ idf_component_register(
         mbedtls
         app_update
         esp_timer
-        driver
+        esp_driver_gpio
         lwip
         esp_system
         log
