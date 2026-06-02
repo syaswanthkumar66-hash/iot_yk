@@ -1,0 +1,13 @@
+YKP SENSOR FIRMWARE v1.2.1
+This is a placeholder file. Replace with your actual compiled ESP32 firmware binary.
+
+Build date: 2026-06-01
+Target: ESP32 / ESP32-S2
+SHA256: b7e2d4f06a3c8190e5d7b3a1f84c2e06b9d3a7f1e28305c4d6f0a9b2e5c1d3f8
+
+To build the real firmware:
+1. Open the esp32-firmware project in VS Code with ESP-IDF extension
+2. Set the device type in sdkconfig: CONFIG_YKP_DEVICE_TYPE_SENSOR=y
+3. Run: idf.py build
+4. Find the binary at: build/ykp_sensor.bin
+5. Copy it here and rename to ykp_sensor_v1.2.1.bin

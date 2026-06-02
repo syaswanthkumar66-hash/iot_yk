@@ -1,0 +1,13 @@
+YKP MOTOR FIRMWARE v1.1.2
+This is a placeholder file. Replace with your actual compiled ESP32 firmware binary.
+
+Build date: 2026-05-28
+Target: ESP32 / ESP32-S3
+SHA256: d0e4f6a28c5b3970g1e7d5c3b8f4e2d0f7a5b9c3e1f680a2d4f8b0c2e6a4d8f0
+
+To build the real firmware:
+1. Open the esp32-firmware project in VS Code with ESP-IDF extension
+2. Set the device type in sdkconfig: CONFIG_YKP_DEVICE_TYPE_MOTOR=y
+3. Run: idf.py build
+4. Find the binary at: build/ykp_motor.bin
+5. Copy it here and rename to ykp_motor_v1.1.2.bin

@@ -1,0 +1,13 @@
+YKP GATEWAY FIRMWARE v1.2.0
+This is a placeholder file. Replace with your actual compiled ESP32 firmware binary.
+
+Build date: 2026-05-15
+Target: ESP32
+SHA256: c9d3e5f17b4a2861f0d6c4e2a7b5f3d1e09c7a3f2d840b6e1f5a3c8d0e7b4f2a
+
+To build the real firmware:
+1. Open the esp32-firmware project in VS Code with ESP-IDF extension
+2. Set the device type in sdkconfig: CONFIG_YKP_DEVICE_TYPE_GATEWAY=y
+3. Run: idf.py build
+4. Find the binary at: build/ykp_gateway.bin
+5. Copy it here and rename to ykp_gateway_v1.2.0.bin
