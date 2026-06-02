@@ -1,5 +1,5 @@
 export function getBackendUrl() {
-  return localStorage.getItem('VITE_YKP_SERVER_URL') || import.meta.env.VITE_YKP_SERVER_URL || 'https://ykp-router.onrender.com'
+  return localStorage.getItem('VITE_YKP_SERVER_URL') || import.meta.env.VITE_YKP_SERVER_URL || 'https://iot-yk.onrender.com'
 }
 
 export function setBackendUrl(url) {
