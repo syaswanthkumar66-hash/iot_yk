@@ -12,6 +12,7 @@ router.get('/', async (_req: Request, res: Response) => {
   const { data, error } = await supabase
     .from('devices').select('*').order('device_id')
   if (error) return res.status(500).json({ error: error.message })
+  if (!data) return res.json([])
   // Annotate with real-time online status from WS connections
   const devices = data.map(d => ({
     ...d,
@@ -24,7 +25,7 @@ router.get('/', async (_req: Request, res: Response) => {
 router.get('/:id', async (req: Request, res: Response) => {
   const { data, error } = await supabase
     .from('devices').select('*').eq('device_id', req.params.id).single()
-  if (error) return res.status(404).json({ error: 'Not found' })
+  if (error || !data) return res.status(404).json({ error: 'Not found' })
   return res.json({ ...data, is_online: deviceConnections.has(data.device_id) })
 })
 
