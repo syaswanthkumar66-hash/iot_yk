@@ -46,8 +46,8 @@ startYkpRouter(wss)
 server.listen(PORT, () => {
   console.log('══════════════════════════════════════')
   console.log(`  YKP Router v5 listening on :${PORT}`)
-  console.log(`  WS  → ws://localhost:${PORT}/ws`)
-  console.log(`  API → http://localhost:${PORT}/api`)
+  console.log(`  WS  → ws://127.0.0.1:${PORT}/ws`)
+  console.log(`  API → http://127.0.0.1:${PORT}/api`)
   console.log('══════════════════════════════════════')
 })
 
