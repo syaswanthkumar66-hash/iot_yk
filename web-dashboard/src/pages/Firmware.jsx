@@ -353,22 +353,39 @@ export default function Firmware() {
           background: 'radial-gradient(circle, rgba(124,111,255,0.15), transparent 70%)',
           borderRadius: '50%',
         }} />
-        <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginBottom: 12 }}>
-          <div style={{
-            width: 54, height: 54,
-            background: 'linear-gradient(135deg, var(--primary), var(--secondary))',
-            borderRadius: 14,
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            fontSize: 26, boxShadow: '0 0 24px var(--primary-glow)',
-          }}>⬇️</div>
-          <div>
-            <h2 style={{ fontSize: 24, fontWeight: 800, color: 'var(--text-primary)' }}>
-              YKP v5 Firmware Downloads
-            </h2>
-            <p style={{ fontSize: 14, color: 'var(--text-secondary)', marginTop: 2 }}>
-              Official signed firmware builds for all ESP32 device types
-            </p>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 20, marginBottom: 12 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+            <div style={{
+              width: 54, height: 54,
+              background: 'linear-gradient(135deg, var(--primary), var(--secondary))',
+              borderRadius: 14,
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              fontSize: 26, boxShadow: '0 0 24px var(--primary-glow)',
+            }}>⬇️</div>
+            <div>
+              <h2 style={{ fontSize: 24, fontWeight: 800, color: 'var(--text-primary)' }}>
+                YKP v5 Firmware Downloads
+              </h2>
+              <p style={{ fontSize: 14, color: 'var(--text-secondary)', marginTop: 2 }}>
+                Official signed firmware builds for all ESP32 device types
+              </p>
+            </div>
           </div>
+          <a
+            href="/firmware/esp32-firmware.zip"
+            download="esp32-firmware.zip"
+            className="btn btn-secondary"
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 8,
+              border: '1px solid rgba(124,111,255,0.4)',
+              background: 'rgba(124,111,255,0.1)',
+              boxShadow: '0 4px 15px rgba(0,0,0,0.2)',
+            }}
+          >
+            📦 Download ESP-IDF Source (.zip)
+          </a>
         </div>
         <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap' }}>
           {[
