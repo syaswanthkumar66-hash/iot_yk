@@ -44,9 +44,9 @@ router.post('/', async (req: Request, res: Response) => {
 
 /** POST /api/ota/:jobId/start — send OTA_BEGIN to device */
 router.post('/:jobId/start', async (req: Request, res: Response) => {
-  const { data: job } = await supabase
-    .from('ota_jobs').select('*').eq('job_id', req.params.jobId).single()
-  if (!job) return res.status(404).json({ error: 'Job not found' })
+  const { data: job, error } = await supabase
+    .from('ota_jobs').select('*').eq('job_id', req.params.jobId).maybeSingle()
+  if (error || !job) return res.status(404).json({ error: 'Job not found' })
 
   const payload = new TlvBuilder()
     .addString(TlvType.FIRMWARE_VER, job.firmware_ver)
