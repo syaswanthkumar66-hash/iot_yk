@@ -73,17 +73,17 @@ static void prov_event_handler(void* arg, esp_event_base_t event_base,
                          (const char *) wifi_sta_cfg->ssid,
                          (const char *) wifi_sta_cfg->password);
                 
-                nvs_config_set_wifi_ssid((const char *)wifi_sta_cfg->ssid);
-                nvs_config_set_wifi_password((const char *)wifi_sta_cfg->password);
+                nvs_config_set_str("wifi_ssid", (const char *)wifi_sta_cfg->ssid);
+                nvs_config_set_str("wifi_password", (const char *)wifi_sta_cfg->password);
                 break;
             }
             case NETWORK_PROV_WIFI_CRED_FAIL: {
-                network_prov_sta_fail_reason_t *reason = (network_prov_sta_fail_reason_t *)event_data;
+                network_prov_wifi_sta_fail_reason_t *reason = (network_prov_wifi_sta_fail_reason_t *)event_data;
                 ESP_LOGE(TAG, "Provisioning failed!\n\tReason : %s",
-                         (*reason == NETWORK_PROV_STA_AUTH_ERROR) ?
+                         (*reason == NETWORK_PROV_WIFI_STA_AUTH_ERROR) ?
                          "Wi-Fi station authentication failed" : "Wi-Fi access-point not found");
                 /* Reset provisioning state so the user can try again */
-                network_prov_mgr_reset_sm_state_on_failure();
+                network_prov_mgr_reset_wifi_sm_state_on_failure();
                 break;
             }
             case NETWORK_PROV_WIFI_CRED_SUCCESS:
