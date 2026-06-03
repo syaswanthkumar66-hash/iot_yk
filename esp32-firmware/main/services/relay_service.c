@@ -6,6 +6,8 @@
 #include <string.h>
 #include "driver/gpio.h"
 #include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 static const char *TAG = "relay_svc";
 
@@ -35,11 +37,47 @@ static void send_ack(uint32_t packet_id, uint32_t session_id, const char *dest_i
     ykp_packet_free(pkt);
 }
 
+static void button_poll_task(void *arg)
+{
+    bool last_btn_state = true;
+    while (1) {
+        bool current_btn_state = gpio_get_level(GPIO_BUTTON_INPUT);
+        if (last_btn_state && !current_btn_state) {
+            vTaskDelay(pdMS_TO_TICKS(50));
+            if (gpio_get_level(GPIO_BUTTON_INPUT) == 0) {
+                ESP_LOGI(TAG, "Local button press detected!");
+                
+                // Blink status LED two times for control indication
+                gpio_set_level(GPIO_STATUS_LED, 1);
+                vTaskDelay(pdMS_TO_TICKS(150));
+                gpio_set_level(GPIO_STATUS_LED, 0);
+                vTaskDelay(pdMS_TO_TICKS(150));
+                gpio_set_level(GPIO_STATUS_LED, 1);
+                vTaskDelay(pdMS_TO_TICKS(150));
+                gpio_set_level(GPIO_STATUS_LED, 0);
+                vTaskDelay(pdMS_TO_TICKS(150));
+
+                // Toggle states
+                s_state = !s_state;
+                gpio_set_level(GPIO_RELAY_OUTPUT, s_state ? 1 : 0);
+                gpio_set_level(GPIO_STATUS_LED,   s_state ? 1 : 0);
+                ESP_LOGI(TAG, "Local toggle state -> %s", s_state ? "ON" : "OFF");
+
+                // Report new state to backend
+                send_ack(0, 0, "SERVER");
+            }
+        }
+        last_btn_state = current_btn_state;
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
+}
+
 void relay_service_init(relay_send_fn_t send_fn)
 {
     s_send = send_fn;
     nvs_config_get_device_id(s_device_id, sizeof(s_device_id));
 
+    // Configure relay output and built-in LED
     gpio_config_t io_cfg = {
         .pin_bit_mask = (1ULL << GPIO_RELAY_OUTPUT) | (1ULL << GPIO_STATUS_LED),
         .mode         = GPIO_MODE_OUTPUT,
@@ -50,6 +88,20 @@ void relay_service_init(relay_send_fn_t send_fn)
     gpio_config(&io_cfg);
     gpio_set_level(GPIO_RELAY_OUTPUT, 0);
     gpio_set_level(GPIO_STATUS_LED,   0);
+
+    // Configure button input (pin 0, active low boot button)
+    gpio_config_t btn_cfg = {
+        .pin_bit_mask = (1ULL << GPIO_BUTTON_INPUT),
+        .mode         = GPIO_MODE_INPUT,
+        .pull_up_en   = GPIO_PULLUP_ENABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type    = GPIO_INTR_DISABLE,
+    };
+    gpio_config(&btn_cfg);
+
+    // Create FreeRTOS polling task
+    xTaskCreate(button_poll_task, "btn_poll", 3072, NULL, 3, NULL);
+
     ESP_LOGI(TAG, "relay service init OK");
 }
 
