@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import { NavLink, Outlet, useLocation } from 'react-router-dom'
 import {
   LayoutDashboard, Cpu, Download, Activity, Users,
-  Zap, Upload, Server
+  Zap, Upload, Server, UserPlus
 } from 'lucide-react'
 import { getBackendUrl, setBackendUrl } from '../lib/api'
 
@@ -28,6 +28,12 @@ const NAV = [
       { to: '/firmware',   icon: Download, label: 'Firmware Download', badge: 'NEW', badgeClass: 'green' },
       { to: '/ota',        icon: Upload,   label: 'OTA Manager',       badge: null  },
     ]
+  },
+  {
+    section: 'Account',
+    items: [
+      { to: '/register',   icon: UserPlus, label: 'Register App Acc',  badge: null },
+    ]
   }
 ]
 
@@ -39,6 +45,7 @@ const PAGE_TITLES = {
   '/automation': { title: 'Automation Engine',  sub: 'IF/THEN rules — sensors trigger actions' },
   '/firmware':   { title: 'Firmware Download',  sub: 'Download official YKP v5 ESP32 firmware builds' },
   '/ota':        { title: 'OTA Manager',         sub: 'Push firmware updates over-the-air' },
+  '/register':   { title: 'User Registration',  sub: 'Create credentials for YKP mobile application' },
 }
 
 export default function Layout() {

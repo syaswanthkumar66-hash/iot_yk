@@ -11,6 +11,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_system.h"
+#include "esp_random.h"
 
 static const char *TAG = "sensor_svc";
 static sensor_send_fn_t s_send = NULL;

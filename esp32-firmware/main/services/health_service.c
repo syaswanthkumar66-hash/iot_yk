@@ -11,6 +11,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "wifi_manager.h"
+#include "esp_random.h"
 
 static const char *TAG = "health_svc";
 static health_send_fn_t s_send = NULL;

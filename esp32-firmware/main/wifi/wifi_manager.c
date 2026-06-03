@@ -80,8 +80,9 @@ bool wifi_manager_connect(const char *ssid, const char *password)
     esp_wifi_set_mode(WIFI_MODE_STA);
     esp_wifi_set_config(WIFI_IF_STA, &wifi_config);
     esp_wifi_start();
+    esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
 
-    ESP_LOGI(TAG, "connecting to SSID: %s", ssid);
+    ESP_LOGI(TAG, "connecting to SSID: %s (modem sleep enabled)", ssid);
 
     EventBits_t bits = xEventGroupWaitBits(s_wifi_event_group,
                                             WIFI_CONNECTED_BIT | WIFI_FAIL_BIT,

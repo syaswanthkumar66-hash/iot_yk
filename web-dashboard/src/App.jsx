@@ -7,6 +7,7 @@ import Health from './pages/Health'
 import Groups from './pages/Groups'
 import Automation from './pages/Automation'
 import OTA from './pages/OTA'
+import Register from './pages/Register'
 
 export default function App() {
   return (
@@ -21,6 +22,7 @@ export default function App() {
           <Route path="groups"     element={<Groups />} />
           <Route path="automation" element={<Automation />} />
           <Route path="ota"        element={<OTA />} />
+          <Route path="register"   element={<Register />} />
         </Route>
       </Routes>
     </BrowserRouter>

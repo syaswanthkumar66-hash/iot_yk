@@ -5,45 +5,12 @@
 
 #include "esp_log.h"
 #include "esp_random.h"
+#include "ykp_constants.h"
 
-/* mbedTLS headers */
-#include "mbedtls/ecdh.h"
-#include "mbedtls/ecdsa.h"
-#include "mbedtls/gcm.h"
-#include "mbedtls/sha256.h"
-#include "mbedtls/hkdf.h"
-#include "mbedtls/md.h"
-#include "mbedtls/entropy.h"
-#include "mbedtls/ctr_drbg.h"
-#include "mbedtls/ecp.h"
-#include "mbedtls/pk.h"
+/* PSA Crypto header */
+#include "psa/crypto.h"
 
 static const char *TAG = "ykp_security";
-
-/* ── mbedTLS RNG context (global) ─────────── */
-static mbedtls_entropy_context   s_entropy;
-static mbedtls_ctr_drbg_context  s_drbg;
-static bool s_rng_ready = false;
-
-static bool init_rng(void)
-{
-    if (s_rng_ready) return true;
-    mbedtls_entropy_init(&s_entropy);
-    mbedtls_ctr_drbg_init(&s_drbg);
-
-    const char *pers = "ykp_v5";
-    int ret = mbedtls_ctr_drbg_seed(&s_drbg,
-                                     mbedtls_entropy_func,
-                                     &s_entropy,
-                                     (const uint8_t *)pers,
-                                     strlen(pers));
-    if (ret != 0) {
-        ESP_LOGE(TAG, "RNG seed failed: -0x%04X", -ret);
-        return false;
-    }
-    s_rng_ready = true;
-    return true;
-}
 
 /* ════════════════════════════════════════════
    Init — load device keys from NVS
@@ -53,7 +20,12 @@ bool ykp_security_init(ykp_security_ctx_t *ctx)
     if (!ctx) return false;
     memset(ctx, 0, sizeof(*ctx));
 
-    if (!init_rng()) return false;
+    /* Initialize PSA Crypto */
+    psa_status_t status = psa_crypto_init();
+    if (status != PSA_SUCCESS) {
+        ESP_LOGE(TAG, "Failed to initialize PSA crypto: %ld", (long)status);
+        return false;
+    }
 
     /* Load device long-term ECDH private key from NVS */
     size_t len = YKP_EC_PRIVKEY_LEN;
@@ -86,43 +58,34 @@ bool ykp_security_init(ykp_security_ctx_t *ctx)
    ════════════════════════════════════════════ */
 bool ykp_security_gen_ephemeral(ykp_security_ctx_t *ctx)
 {
-    if (!ctx || !s_rng_ready) return false;
+    if (!ctx) return false;
 
-    mbedtls_ecdh_context ecdh;
-    mbedtls_ecdh_init(&ecdh);
+    psa_key_attributes_t attr = PSA_KEY_ATTRIBUTES_INIT;
+    psa_set_key_type(&attr, PSA_KEY_TYPE_ECC_KEY_PAIR(PSA_ECC_FAMILY_SECP_R1));
+    psa_set_key_bits(&attr, 256);
+    psa_set_key_usage_flags(&attr, PSA_KEY_USAGE_EXPORT);
+    psa_set_key_algorithm(&attr, PSA_ALG_ECDH);
 
-    int ret = mbedtls_ecdh_setup(&ecdh, MBEDTLS_ECP_DP_SECP256R1);
-    if (ret != 0) goto fail;
+    psa_key_id_t key_id;
+    psa_status_t status = psa_generate_key(&attr, &key_id);
+    if (status != PSA_SUCCESS) {
+        ESP_LOGE(TAG, "ephemeral keygen failed: %ld", (long)status);
+        return false;
+    }
 
-    ret = mbedtls_ecdh_gen_public(&ecdh.ctx.mbed_ecdh.grp,
-                                   &ecdh.ctx.mbed_ecdh.d,
-                                   &ecdh.ctx.mbed_ecdh.Q,
-                                   mbedtls_ctr_drbg_random, &s_drbg);
-    if (ret != 0) goto fail;
-
-    /* Export private key (big-endian 32 bytes) */
-    ret = mbedtls_mpi_write_binary(&ecdh.ctx.mbed_ecdh.d,
-                                    ctx->ephemeral_private,
-                                    YKP_EC_PRIVKEY_LEN);
-    if (ret != 0) goto fail;
-
-    /* Export public key (uncompressed 65 bytes: 04 || X || Y) */
     size_t out_len;
-    ret = mbedtls_ecp_point_write_binary(&ecdh.ctx.mbed_ecdh.grp,
-                                          &ecdh.ctx.mbed_ecdh.Q,
-                                          MBEDTLS_ECP_PF_UNCOMPRESSED,
-                                          &out_len,
-                                          ctx->ephemeral_public,
-                                          YKP_EC_PUBKEY_LEN);
-    if (ret != 0 || out_len != YKP_EC_PUBKEY_LEN) goto fail;
+    status = psa_export_key(key_id, ctx->ephemeral_private, YKP_EC_PRIVKEY_LEN, &out_len);
+    if (status != PSA_SUCCESS) goto fail;
 
-    mbedtls_ecdh_free(&ecdh);
+    status = psa_export_public_key(key_id, ctx->ephemeral_public, YKP_EC_PUBKEY_LEN, &out_len);
+    if (status != PSA_SUCCESS) goto fail;
+
+    psa_destroy_key(key_id);
     ESP_LOGI(TAG, "ephemeral key pair generated");
     return true;
 
 fail:
-    ESP_LOGE(TAG, "ephemeral keygen failed: -0x%04X", -ret);
-    mbedtls_ecdh_free(&ecdh);
+    psa_destroy_key(key_id);
     return false;
 }
 
@@ -137,74 +100,58 @@ bool ykp_security_derive_session_key(ykp_security_ctx_t *ctx,
 {
     if (!ctx || !server_ephemeral_pub || !nonce) return false;
 
-    mbedtls_ecdh_context  ecdh;
-    mbedtls_ecp_group     grp;
-    mbedtls_ecp_point     peer_Q;
-    mbedtls_mpi           d, z;
-    uint8_t               shared_secret[32];
-    int ret;
+    /* Import our ephemeral private key */
+    psa_key_attributes_t attr = PSA_KEY_ATTRIBUTES_INIT;
+    psa_set_key_type(&attr, PSA_KEY_TYPE_ECC_KEY_PAIR(PSA_ECC_FAMILY_SECP_R1));
+    psa_set_key_bits(&attr, 256);
+    psa_set_key_usage_flags(&attr, PSA_KEY_USAGE_DERIVE);
+    psa_set_key_algorithm(&attr, PSA_ALG_ECDH);
 
-    mbedtls_ecdh_init(&ecdh);
-    mbedtls_ecp_group_init(&grp);
-    mbedtls_ecp_point_init(&peer_Q);
-    mbedtls_mpi_init(&d);
-    mbedtls_mpi_init(&z);
+    psa_key_id_t key_id;
+    psa_status_t status = psa_import_key(&attr, ctx->ephemeral_private, YKP_EC_PRIVKEY_LEN, &key_id);
+    if (status != PSA_SUCCESS) return false;
 
-    ret = mbedtls_ecp_group_load(&grp, MBEDTLS_ECP_DP_SECP256R1);
-    if (ret != 0) goto fail;
+    uint8_t shared_secret[32];
+    size_t out_len;
+    status = psa_raw_key_agreement(PSA_ALG_ECDH, key_id, server_ephemeral_pub, YKP_EC_PUBKEY_LEN, shared_secret, sizeof(shared_secret), &out_len);
+    psa_destroy_key(key_id);
 
-    /* Load our ephemeral private key */
-    ret = mbedtls_mpi_read_binary(&d, ctx->ephemeral_private, YKP_EC_PRIVKEY_LEN);
-    if (ret != 0) goto fail;
-
-    /* Load server ephemeral public key */
-    ret = mbedtls_ecp_point_read_binary(&grp, &peer_Q,
-                                         server_ephemeral_pub,
-                                         YKP_EC_PUBKEY_LEN);
-    if (ret != 0) goto fail;
-
-    /* ECDH scalar multiplication: z = d * peer_Q */
-    ret = mbedtls_ecdh_compute_shared(&grp, &z, &peer_Q, &d,
-                                       mbedtls_ctr_drbg_random, &s_drbg);
-    if (ret != 0) goto fail;
-
-    /* Export X-coordinate of shared point as shared secret */
-    ret = mbedtls_mpi_write_binary(&z, shared_secret, 32);
-    if (ret != 0) goto fail;
+    if (status != PSA_SUCCESS) {
+        ESP_LOGE(TAG, "ECDH failed: %ld", (long)status);
+        return false;
+    }
 
     /* HKDF-SHA256: key = HKDF(shared_secret, salt=nonce, info="ykp-session-v5") */
-    const uint8_t *info     = (const uint8_t *)"ykp-session-v5";
-    uint16_t       info_len = strlen((char *)info);
+    psa_key_attributes_t hkdf_attr = PSA_KEY_ATTRIBUTES_INIT;
+    psa_set_key_type(&hkdf_attr, PSA_KEY_TYPE_DERIVE);
+    psa_set_key_usage_flags(&hkdf_attr, PSA_KEY_USAGE_DERIVE);
+    psa_set_key_algorithm(&hkdf_attr, PSA_ALG_HKDF(PSA_ALG_SHA_256));
 
-    ret = mbedtls_hkdf(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256),
-                        nonce, nonce_len,           /* salt */
-                        shared_secret, 32,           /* input key material */
-                        info, info_len,              /* info */
-                        ctx->session.session_key,
-                        YKP_AES_KEY_LEN);
-    if (ret != 0) goto fail;
+    psa_key_id_t base_key;
+    status = psa_import_key(&hkdf_attr, shared_secret, sizeof(shared_secret), &base_key);
+    memset(shared_secret, 0, sizeof(shared_secret));
+    if (status != PSA_SUCCESS) return false;
+
+    psa_key_derivation_operation_t deriv = PSA_KEY_DERIVATION_OPERATION_INIT;
+    psa_key_derivation_setup(&deriv, PSA_ALG_HKDF(PSA_ALG_SHA_256));
+    psa_key_derivation_input_bytes(&deriv, PSA_KEY_DERIVATION_INPUT_SALT, nonce, nonce_len);
+    psa_key_derivation_input_key(&deriv, PSA_KEY_DERIVATION_INPUT_SECRET, base_key);
+    psa_key_derivation_input_bytes(&deriv, PSA_KEY_DERIVATION_INPUT_INFO, (const uint8_t *)"ykp-session-v5", 14);
+
+    status = psa_key_derivation_output_bytes(&deriv, ctx->session.session_key, YKP_AES_KEY_LEN);
+    psa_key_derivation_abort(&deriv);
+    psa_destroy_key(base_key);
+
+    if (status != PSA_SUCCESS) {
+        ESP_LOGE(TAG, "HKDF failed: %ld", (long)status);
+        return false;
+    }
 
     ctx->session.session_id = session_id;
     ctx->session.active     = true;
 
-    memset(shared_secret, 0, sizeof(shared_secret));
     ESP_LOGI(TAG, "session key derived OK, session_id=0x%08lX", (unsigned long)session_id);
-
-    mbedtls_mpi_free(&d);
-    mbedtls_mpi_free(&z);
-    mbedtls_ecp_point_free(&peer_Q);
-    mbedtls_ecp_group_free(&grp);
-    mbedtls_ecdh_free(&ecdh);
     return true;
-
-fail:
-    ESP_LOGE(TAG, "key derivation failed: -0x%04X", -ret);
-    mbedtls_mpi_free(&d);
-    mbedtls_mpi_free(&z);
-    mbedtls_ecp_point_free(&peer_Q);
-    mbedtls_ecp_group_free(&grp);
-    mbedtls_ecdh_free(&ecdh);
-    return false;
 }
 
 /* ════════════════════════════════════════════
@@ -233,32 +180,34 @@ bool ykp_security_encrypt(const ykp_session_keys_t *keys,
     iv[7]  =  packet_id        & 0xFF;
     esp_fill_random(&iv[8], 4);
 
-    mbedtls_gcm_context gcm;
-    mbedtls_gcm_init(&gcm);
+    psa_key_attributes_t attr = PSA_KEY_ATTRIBUTES_INIT;
+    psa_set_key_type(&attr, PSA_KEY_TYPE_AES);
+    psa_set_key_bits(&attr, 256);
+    psa_set_key_usage_flags(&attr, PSA_KEY_USAGE_ENCRYPT);
+    psa_set_key_algorithm(&attr, PSA_ALG_GCM);
 
-    int ret = mbedtls_gcm_setkey(&gcm, MBEDTLS_CIPHER_ID_AES,
-                                   keys->session_key, YKP_AES_KEY_LEN * 8);
-    if (ret != 0) {
-        ESP_LOGE(TAG, "gcm_setkey failed: -0x%04X", -ret);
-        mbedtls_gcm_free(&gcm);
+    psa_key_id_t key_id;
+    if (psa_import_key(&attr, keys->session_key, YKP_AES_KEY_LEN, &key_id) != PSA_SUCCESS) return false;
+
+    uint8_t *out_buf = malloc(plaintext_len + YKP_AUTH_TAG_SIZE);
+    if (!out_buf) {
+        psa_destroy_key(key_id);
         return false;
     }
 
-    ret = mbedtls_gcm_crypt_and_tag(&gcm,
-                                     MBEDTLS_GCM_ENCRYPT,
-                                     plaintext_len,
-                                     iv,  YKP_GCM_IV_LEN,
-                                     aad, aad_len,
-                                     plaintext,    /* in */
-                                     plaintext,    /* out (in-place) */
-                                     YKP_AUTH_TAG_SIZE,
-                                     auth_tag_out);
-    mbedtls_gcm_free(&gcm);
+    size_t out_len;
+    psa_status_t status = psa_aead_encrypt(key_id, PSA_ALG_GCM, iv, YKP_GCM_IV_LEN, aad, aad_len, plaintext, plaintext_len, out_buf, plaintext_len + YKP_AUTH_TAG_SIZE, &out_len);
+    psa_destroy_key(key_id);
 
-    if (ret != 0) {
-        ESP_LOGE(TAG, "gcm_encrypt failed: -0x%04X", -ret);
+    if (status != PSA_SUCCESS) {
+        free(out_buf);
+        ESP_LOGE(TAG, "gcm_encrypt failed: %ld", (long)status);
         return false;
     }
+
+    memcpy(plaintext, out_buf, plaintext_len);
+    memcpy(auth_tag_out, out_buf + plaintext_len, YKP_AUTH_TAG_SIZE);
+    free(out_buf);
     return true;
 }
 
@@ -287,23 +236,29 @@ bool ykp_security_decrypt(const ykp_session_keys_t *keys,
     iv[7] =  packet_id        & 0xFF;
     /* iv[8..11] was embedded in the packet — extract if needed */
 
-    mbedtls_gcm_context gcm;
-    mbedtls_gcm_init(&gcm);
+    psa_key_attributes_t attr = PSA_KEY_ATTRIBUTES_INIT;
+    psa_set_key_type(&attr, PSA_KEY_TYPE_AES);
+    psa_set_key_bits(&attr, 256);
+    psa_set_key_usage_flags(&attr, PSA_KEY_USAGE_DECRYPT);
+    psa_set_key_algorithm(&attr, PSA_ALG_GCM);
 
-    int ret = mbedtls_gcm_setkey(&gcm, MBEDTLS_CIPHER_ID_AES,
-                                   keys->session_key, YKP_AES_KEY_LEN * 8);
-    if (ret != 0) { mbedtls_gcm_free(&gcm); return false; }
+    psa_key_id_t key_id;
+    if (psa_import_key(&attr, keys->session_key, YKP_AES_KEY_LEN, &key_id) != PSA_SUCCESS) return false;
 
-    ret = mbedtls_gcm_auth_decrypt(&gcm,
-                                    ciphertext_len,
-                                    iv,  YKP_GCM_IV_LEN,
-                                    aad, aad_len,
-                                    auth_tag, YKP_AUTH_TAG_SIZE,
-                                    ciphertext,
-                                    ciphertext);
-    mbedtls_gcm_free(&gcm);
+    uint8_t *in_buf = malloc(ciphertext_len + YKP_AUTH_TAG_SIZE);
+    if (!in_buf) {
+        psa_destroy_key(key_id);
+        return false;
+    }
+    memcpy(in_buf, ciphertext, ciphertext_len);
+    memcpy(in_buf + ciphertext_len, auth_tag, YKP_AUTH_TAG_SIZE);
 
-    if (ret != 0) {
+    size_t out_len;
+    psa_status_t status = psa_aead_decrypt(key_id, PSA_ALG_GCM, iv, YKP_GCM_IV_LEN, aad, aad_len, in_buf, ciphertext_len + YKP_AUTH_TAG_SIZE, ciphertext, ciphertext_len, &out_len);
+    psa_destroy_key(key_id);
+    free(in_buf);
+
+    if (status != PSA_SUCCESS) {
         ESP_LOGW(TAG, "decrypt/auth failed — possible tamper or replay");
         return false;
     }
@@ -321,39 +276,20 @@ bool ykp_security_sign(ykp_security_ctx_t *ctx,
     uint8_t hash[YKP_SHA256_LEN];
     if (!ykp_security_sha256(data, data_len, hash)) return false;
 
-    mbedtls_ecdsa_context ecdsa;
-    mbedtls_ecp_group     grp;
-    mbedtls_mpi           r, s, d;
-    mbedtls_ecdsa_init(&ecdsa);
-    mbedtls_ecp_group_init(&grp);
-    mbedtls_mpi_init(&r);
-    mbedtls_mpi_init(&s);
-    mbedtls_mpi_init(&d);
+    psa_key_attributes_t attr = PSA_KEY_ATTRIBUTES_INIT;
+    psa_set_key_type(&attr, PSA_KEY_TYPE_ECC_KEY_PAIR(PSA_ECC_FAMILY_SECP_R1));
+    psa_set_key_bits(&attr, 256);
+    psa_set_key_usage_flags(&attr, PSA_KEY_USAGE_SIGN_HASH);
+    psa_set_key_algorithm(&attr, PSA_ALG_ECDSA(PSA_ALG_SHA_256));
 
-    bool ok = false;
-    int  ret;
+    psa_key_id_t key_id;
+    if (psa_import_key(&attr, ctx->device_private_key, YKP_EC_PRIVKEY_LEN, &key_id) != PSA_SUCCESS) return false;
 
-    ret = mbedtls_ecp_group_load(&grp, MBEDTLS_ECP_DP_SECP256R1);
-    if (ret != 0) goto done;
+    size_t sig_len;
+    psa_status_t status = psa_sign_hash(key_id, PSA_ALG_ECDSA(PSA_ALG_SHA_256), hash, YKP_SHA256_LEN, sig_out, 64, &sig_len);
+    psa_destroy_key(key_id);
 
-    ret = mbedtls_mpi_read_binary(&d, ctx->device_private_key, YKP_EC_PRIVKEY_LEN);
-    if (ret != 0) goto done;
-
-    ret = mbedtls_ecdsa_sign(&grp, &r, &s, &d, hash, YKP_SHA256_LEN,
-                              mbedtls_ctr_drbg_random, &s_drbg);
-    if (ret != 0) goto done;
-
-    mbedtls_mpi_write_binary(&r, sig_out,                  32);
-    mbedtls_mpi_write_binary(&s, sig_out + 32,             32);
-    ok = true;
-
-done:
-    mbedtls_mpi_free(&r);
-    mbedtls_mpi_free(&s);
-    mbedtls_mpi_free(&d);
-    mbedtls_ecp_group_free(&grp);
-    mbedtls_ecdsa_free(&ecdsa);
-    return ok;
+    return status == PSA_SUCCESS;
 }
 
 /* ════════════════════════════════════════════
@@ -370,42 +306,19 @@ bool ykp_security_verify(ykp_security_ctx_t *ctx,
     uint8_t hash[YKP_SHA256_LEN];
     if (!ykp_security_sha256(data, data_len, hash)) return false;
 
-    mbedtls_ecdsa_context ecdsa;
-    mbedtls_ecp_group     grp;
-    mbedtls_ecp_point     Q;
-    mbedtls_mpi           r, s;
+    psa_key_attributes_t attr = PSA_KEY_ATTRIBUTES_INIT;
+    psa_set_key_type(&attr, PSA_KEY_TYPE_ECC_PUBLIC_KEY(PSA_ECC_FAMILY_SECP_R1));
+    psa_set_key_bits(&attr, 256);
+    psa_set_key_usage_flags(&attr, PSA_KEY_USAGE_VERIFY_HASH);
+    psa_set_key_algorithm(&attr, PSA_ALG_ECDSA(PSA_ALG_SHA_256));
 
-    mbedtls_ecdsa_init(&ecdsa);
-    mbedtls_ecp_group_init(&grp);
-    mbedtls_ecp_point_init(&Q);
-    mbedtls_mpi_init(&r);
-    mbedtls_mpi_init(&s);
+    psa_key_id_t key_id;
+    if (psa_import_key(&attr, ctx->ota_verify_key, YKP_EC_PUBKEY_LEN, &key_id) != PSA_SUCCESS) return false;
 
-    bool ok = false;
-    int  ret;
+    psa_status_t status = psa_verify_hash(key_id, PSA_ALG_ECDSA(PSA_ALG_SHA_256), hash, YKP_SHA256_LEN, sig, sig_len);
+    psa_destroy_key(key_id);
 
-    ret = mbedtls_ecp_group_load(&grp, MBEDTLS_ECP_DP_SECP256R1);
-    if (ret != 0) goto done;
-
-    ret = mbedtls_ecp_point_read_binary(&grp, &Q, ctx->ota_verify_key, YKP_EC_PUBKEY_LEN);
-    if (ret != 0) goto done;
-
-    ret = mbedtls_mpi_read_binary(&r, sig,      32);
-    if (ret != 0) goto done;
-    ret = mbedtls_mpi_read_binary(&s, sig + 32, 32);
-    if (ret != 0) goto done;
-
-    ret = mbedtls_ecdsa_verify(&grp, hash, YKP_SHA256_LEN, &Q, &r, &s);
-    ok  = (ret == 0);
-
-done:
-    mbedtls_mpi_free(&r);
-    mbedtls_mpi_free(&s);
-    mbedtls_ecp_point_free(&Q);
-    mbedtls_ecp_group_free(&grp);
-    mbedtls_ecdsa_free(&ecdsa);
-    if (!ok) ESP_LOGE(TAG, "ECDSA verify failed: -0x%04X", -ret);
-    return ok;
+    return status == PSA_SUCCESS;
 }
 
 /* ════════════════════════════════════════════
@@ -419,11 +332,7 @@ bool ykp_security_random(uint8_t *out, uint16_t len)
 
 bool ykp_security_sha256(const uint8_t *data, uint32_t len, uint8_t *hash_out)
 {
-    mbedtls_sha256_context ctx;
-    mbedtls_sha256_init(&ctx);
-    int ret = mbedtls_sha256_starts(&ctx, 0);    /* 0 = SHA-256 */
-    if (ret == 0) ret = mbedtls_sha256_update(&ctx, data, len);
-    if (ret == 0) ret = mbedtls_sha256_finish(&ctx, hash_out);
-    mbedtls_sha256_free(&ctx);
-    return ret == 0;
+    size_t hash_len;
+    psa_status_t status = psa_hash_compute(PSA_ALG_SHA_256, data, len, hash_out, YKP_SHA256_LEN, &hash_len);
+    return status == PSA_SUCCESS;
 }

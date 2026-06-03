@@ -20,8 +20,8 @@ static const esp_partition_t *s_ota_partition = NULL;
 static char                   s_device_id[9] = {0};
 
 /* SHA-256 context to accumulate hash while writing */
-#include "mbedtls/sha256.h"
-static mbedtls_sha256_context s_sha_ctx;
+#include "psa/crypto.h"
+static psa_hash_operation_t s_sha_ctx;
 
 static void send_ota_pkt(uint8_t action)
 {
@@ -84,8 +84,9 @@ void ota_service_handle(const uint8_t *payload, uint16_t len, uint8_t action_id)
                 return;
             }
 
-            mbedtls_sha256_init(&s_sha_ctx);
-            mbedtls_sha256_starts(&s_sha_ctx, 0);
+            psa_crypto_init();
+            s_sha_ctx = psa_hash_operation_init();
+            psa_hash_setup(&s_sha_ctx, PSA_ALG_SHA_256);
 
             s_state.active = true;
             s_state.next_expected_chunk = 0;
@@ -131,7 +132,7 @@ void ota_service_handle(const uint8_t *payload, uint16_t len, uint8_t action_id)
                     s_state.active = false;
                     return;
                 }
-                mbedtls_sha256_update(&s_sha_ctx, tlv.value, tlv.length);
+                psa_hash_update(&s_sha_ctx, tlv.value, tlv.length);
                 s_state.next_expected_chunk++;
                 ESP_LOGD(TAG, "chunk %u/%u written",
                          chunk_idx + 1, s_state.chunks_total);
@@ -145,8 +146,9 @@ void ota_service_handle(const uint8_t *payload, uint16_t len, uint8_t action_id)
 
             /* Verify SHA256 */
             uint8_t computed_hash[32];
-            mbedtls_sha256_finish(&s_sha_ctx, computed_hash);
-            mbedtls_sha256_free(&s_sha_ctx);
+            size_t hash_len = 0;
+            psa_hash_finish(&s_sha_ctx, computed_hash, sizeof(computed_hash), &hash_len);
+            psa_hash_abort(&s_sha_ctx);
 
             if (memcmp(computed_hash, s_state.sha256, 32) != 0) {
                 ESP_LOGE(TAG, "SHA256 mismatch — OTA FAIL");

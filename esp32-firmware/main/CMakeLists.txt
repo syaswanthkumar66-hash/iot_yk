@@ -14,7 +14,7 @@ idf_component_register(
         "services/ota_service.c"
         "discovery/ykp_discovery.c"
         "config/nvs_config.c"
-        "config/provision_server.c"
+        "config/ble_provision.c"
         "wifi/wifi_manager.c"
     INCLUDE_DIRS
         "."
@@ -31,6 +31,7 @@ idf_component_register(
         nvs_flash
         esp_http_client
         esp_websocket_client
+        cjson
         mbedtls
         app_update
         esp_timer
@@ -40,4 +41,7 @@ idf_component_register(
         log
         freertos
         esp_adc
+        esp_pm
+        network_provisioning
+        bt
 )

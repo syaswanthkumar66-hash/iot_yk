@@ -15,6 +15,7 @@
 #include "nvs_flash.h"
 #include "esp_netif.h"
 #include "esp_event.h"
+#include "esp_pm.h"
 
 /* YKP modules */
 #include "nvs_config.h"
@@ -33,7 +34,7 @@
 #include "health_service.h"
 #include "ota_service.h"
 #include "ykp_discovery.h"
-#include "provision_server.h"
+#include "ble_provision.h"
 
 static const char *TAG = "ykp_main";
 
@@ -294,6 +295,20 @@ void app_main(void)
     ESP_LOGI(TAG, "  YKP v5 Firmware %s", YKP_FIRMWARE_VERSION);
     ESP_LOGI(TAG, "═══════════════════════════════════════");
 
+    /* 0. Power Management Init */
+#if CONFIG_PM_ENABLE
+    esp_pm_config_t pm_config = {
+        .max_freq_mhz = CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ,
+        .min_freq_mhz = 80,
+        .light_sleep_enable = true
+    };
+    if (esp_pm_configure(&pm_config) == ESP_OK) {
+        ESP_LOGI(TAG, "Power management configured: max=%dMHz, min=80MHz, light_sleep=enabled", CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ);
+    } else {
+        ESP_LOGE(TAG, "Power management configuration failed");
+    }
+#endif
+
     /* 1. NVS init */
     if (!nvs_config_init()) {
         ESP_LOGE(TAG, "NVS init failed — halting");
@@ -313,16 +328,16 @@ void app_main(void)
 
     if (!has_id || !has_ssid || !has_pass) {
         ESP_LOGW(TAG, "Device not fully provisioned (has_id=%d, has_ssid=%d, has_pass=%d)", has_id, has_ssid, has_pass);
-        ESP_LOGW(TAG, "Starting SoftAP + HTTP provisioning server...");
+        ESP_LOGW(TAG, "Starting BLE provisioning manager...");
         esp_netif_init();
         esp_event_loop_create_default();
-        if (provision_server_start()) {
-            ESP_LOGI(TAG, "Waiting for provisioning via mobile app or web dashboard...");
+        if (ykp_ble_provision_start()) {
+            ESP_LOGI(TAG, "Waiting for BLE provisioning via mobile app...");
             while (1) {
                 vTaskDelay(pdMS_TO_TICKS(1000));
             }
         } else {
-            ESP_LOGE(TAG, "Failed to start provisioning server. Restarting...");
+            ESP_LOGE(TAG, "Failed to start BLE provisioning. Restarting...");
             vTaskDelay(pdMS_TO_TICKS(2000));
             esp_restart();
         }
