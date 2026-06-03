@@ -12,9 +12,10 @@ router.post('/register', async (req: Request, res: Response) => {
   }
 
   try {
-    const { data, error } = await supabase.auth.signUp({
+    const { data, error } = await supabase.auth.admin.createUser({
       email,
       password,
+      email_confirm: true, // Auto-confirm email to bypass verification step
     })
 
     if (error) {
