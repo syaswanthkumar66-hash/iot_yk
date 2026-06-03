@@ -8,11 +8,17 @@ import Groups from './pages/Groups'
 import Automation from './pages/Automation'
 import OTA from './pages/OTA'
 import Register from './pages/Register'
+import Login from './pages/Login'
 
 export default function App() {
   return (
     <BrowserRouter>
       <Routes>
+        {/* Public authentication routes */}
+        <Route path="/login" element={<Login />} />
+        <Route path="/register" element={<Register />} />
+
+        {/* Protected dashboard routes */}
         <Route path="/" element={<Layout />}>
           <Route index element={<Navigate to="/dashboard" replace />} />
           <Route path="dashboard"  element={<Dashboard />} />
@@ -22,8 +28,10 @@ export default function App() {
           <Route path="groups"     element={<Groups />} />
           <Route path="automation" element={<Automation />} />
           <Route path="ota"        element={<OTA />} />
-          <Route path="register"   element={<Register />} />
         </Route>
+
+        {/* Wildcard fallback redirection */}
+        <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </BrowserRouter>
   )

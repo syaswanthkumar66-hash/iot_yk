@@ -1,7 +1,9 @@
 import { Router, Request, Response } from 'express'
 import { supabase } from '../db/supabase'
+import { authMiddleware } from '../middleware/auth'
 
 const router = Router()
+router.use(authMiddleware)
 
 /** GET /api/health — API health check */
 router.get('/', (_req: Request, res: Response) => {

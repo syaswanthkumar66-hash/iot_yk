@@ -10,6 +10,7 @@ import { startYkpRouter } from './router/ykp-router'
 import devicesApi from './api/devices'
 import healthApi  from './api/health'
 import otaApi     from './api/ota'
+import authApi    from './api/auth'
 
 const PORT = parseInt(process.env.PORT ?? '8080')
 const app  = express()
@@ -52,6 +53,7 @@ if (fs.existsSync(distPath)) {
 app.use('/api/devices', devicesApi)
 app.use('/api/health',  healthApi)
 app.use('/api/ota',     otaApi)
+app.use('/api/auth',    authApi)
 
 // ── SPA routing fallback ──
 app.get('*', (req, res, next) => {

@@ -4,8 +4,10 @@ import { sendToDevice } from '../router/route-engine'
 import { buildPacket, TlvBuilder } from '../packet/builder'
 import { RouteType, ServiceId, OtaAction, QoS, TlvType } from '../packet/constants'
 import { v4 as uuidv4 } from 'uuid'
+import { authMiddleware } from '../middleware/auth'
 
 const router = Router()
+router.use(authMiddleware)
 
 /** GET /api/ota — list all OTA jobs */
 router.get('/', async (_req: Request, res: Response) => {

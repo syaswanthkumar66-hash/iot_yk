@@ -4,8 +4,10 @@ import { deviceConnections } from '../router/route-engine'
 import { buildPacket } from '../packet/builder'
 import { RouteType, ServiceId, RelayAction, QoS } from '../packet/constants'
 import { sendToDevice } from '../router/route-engine'
+import { authMiddleware } from '../middleware/auth'
 
 const router = Router()
+router.use(authMiddleware)
 
 /** GET /api/devices — list all devices */
 router.get('/', async (_req: Request, res: Response) => {

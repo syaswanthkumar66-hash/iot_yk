@@ -40,36 +40,125 @@ export function setBackendUrl(url) {
   }
 }
 
+// ── Auth Helpers ─────────────────────────────────
+
+export function getAuthToken() {
+  return localStorage.getItem('ykp_auth_token')
+}
+
+export function setAuthToken(token) {
+  if (token) {
+    localStorage.setItem('ykp_auth_token', token)
+  } else {
+    localStorage.removeItem('ykp_auth_token')
+  }
+}
+
+export function isAuthenticated() {
+  return !!getAuthToken()
+}
+
+export function getAuthHeaders() {
+  const token = getAuthToken()
+  return {
+    'Content-Type': 'application/json',
+    ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+  }
+}
+
+// ── Authentication API ────────────────────────────
+
+export async function login(email, password) {
+  const res = await fetch(`${getBackendUrl()}/api/auth/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, password })
+  })
+  
+  const data = await res.json()
+  if (!res.ok) throw new Error(data.error || 'Failed to log in')
+  
+  // Store the access token returned from backend Supabase proxy
+  if (data?.session?.access_token) {
+    setAuthToken(data.session.access_token)
+  }
+  return data
+}
+
+export async function register(email, password) {
+  const res = await fetch(`${getBackendUrl()}/api/auth/register`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, password })
+  })
+  
+  const data = await res.json()
+  if (!res.ok) throw new Error(data.error || 'Failed to register account')
+  return data
+}
+
+export function logout() {
+  setAuthToken(null)
+  window.location.href = '/login'
+}
+
+// ── Devices API ───────────────────────────────────
+
 export async function fetchDevices() {
-  const res = await fetch(`${getBackendUrl()}/api/devices`)
-  if (!res.ok) throw new Error('Failed to fetch devices')
+  const res = await fetch(`${getBackendUrl()}/api/devices`, {
+    headers: getAuthHeaders()
+  })
+  if (!res.ok) {
+    if (res.status === 401) logout()
+    throw new Error('Failed to fetch devices')
+  }
   return res.json()
 }
 
 export async function fetchDevice(deviceId) {
-  const res = await fetch(`${getBackendUrl()}/api/devices/${deviceId}`)
-  if (!res.ok) throw new Error('Failed to fetch device')
+  const res = await fetch(`${getBackendUrl()}/api/devices/${deviceId}`, {
+    headers: getAuthHeaders()
+  })
+  if (!res.ok) {
+    if (res.status === 401) logout()
+    throw new Error('Failed to fetch device')
+  }
   return res.json()
 }
 
 export async function sendCommand(deviceId, service, action) {
   const res = await fetch(`${getBackendUrl()}/api/devices/${deviceId}/command`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: getAuthHeaders(),
     body: JSON.stringify({ service, action }),
   })
-  if (!res.ok) throw new Error('Failed to send command')
+  if (!res.ok) {
+    if (res.status === 401) logout()
+    throw new Error('Failed to send command')
+  }
   return res.json()
 }
 
+// ── Health API ────────────────────────────────────
+
 export async function fetchHealth(deviceId) {
-  const res = await fetch(`${getBackendUrl()}/api/health/${deviceId}`)
-  if (!res.ok) throw new Error('Failed to fetch health')
+  const res = await fetch(`${getBackendUrl()}/api/health/${deviceId}`, {
+    headers: getAuthHeaders()
+  })
+  if (!res.ok) {
+    if (res.status === 401) logout()
+    throw new Error('Failed to fetch health')
+  }
   return res.json()
 }
 
 export async function fetchHealthHistory(deviceId, hours = 24) {
-  const res = await fetch(`${getBackendUrl()}/api/health/${deviceId}/history?hours=${hours}`)
-  if (!res.ok) throw new Error('Failed to fetch health history')
+  const res = await fetch(`${getBackendUrl()}/api/health/${deviceId}/history?hours=${hours}`, {
+    headers: getAuthHeaders()
+  })
+  if (!res.ok) {
+    if (res.status === 401) logout()
+    throw new Error('Failed to fetch health history')
+  }
   return res.json()
 }

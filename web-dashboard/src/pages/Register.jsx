@@ -1,5 +1,6 @@
 import { useState } from 'react'
-import { supabase } from '../lib/supabase'
+import { Link } from 'react-router-dom'
+import { register, isAuthenticated } from '../lib/api'
 import { UserPlus, CheckCircle2, XCircle, Loader2, KeyRound, Mail } from 'lucide-react'
 
 export default function Register() {
@@ -33,25 +34,16 @@ export default function Register() {
 
     setLoading(true)
     try {
-      const { data, error: signUpError } = await supabase.auth.signUp({
-        email,
-        password,
-      })
+      const data = await register(email, password)
 
-      if (signUpError) throw signUpError
-
-      if (data?.user) {
-        // If email confirmation is required, Supabase returns a user but session is null/unconfirmed
-        const isConfirmRequired = data.user.identities && data.user.identities.length === 0
-        if (isConfirmRequired) {
-          setMessage('This email is already registered or requires verification.')
-        } else {
-          setMessage('Account registered successfully! You can now log into the YKP Mobile App.')
-          // Reset form
-          setEmail('')
-          setPassword('')
-          setConfirmPassword('')
-        }
+      if (data?.success) {
+        setMessage('Account registered successfully! You can now log into the YKP Mobile App.')
+        // Reset form
+        setEmail('')
+        setPassword('')
+        setConfirmPassword('')
+      } else {
+        throw new Error(data?.error || 'Registration failed')
       }
     } catch (err) {
       console.error('Registration error:', err)
@@ -62,8 +54,49 @@ export default function Register() {
   }
 
   return (
-    <div style={{ maxWidth: '600px', margin: '40px auto 0', padding: '0 20px' }}>
-      <div className="card" style={{ padding: '32px', position: 'relative', overflow: 'hidden' }}>
+    <div style={{
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      minHeight: '100vh',
+      width: '100vw',
+      padding: '20px',
+      position: 'relative',
+      overflow: 'hidden'
+    }}>
+      {/* Background glow effects to enhance aesthetics */}
+      <div style={{
+        position: 'absolute',
+        top: '20%',
+        left: '30%',
+        width: '400px',
+        height: '400px',
+        background: 'radial-gradient(circle, var(--primary-glow) 0%, transparent 70%)',
+        zIndex: 0,
+        pointerEvents: 'none'
+      }} />
+      <div style={{
+        position: 'absolute',
+        bottom: '20%',
+        right: '30%',
+        width: '350px',
+        height: '350px',
+        background: 'radial-gradient(circle, var(--secondary-glow) 0%, transparent 70%)',
+        zIndex: 0,
+        pointerEvents: 'none'
+      }} />
+
+      <div className="card" style={{
+        width: '100%',
+        maxWidth: '500px',
+        padding: '32px',
+        zIndex: 1,
+        boxShadow: '0 20px 40px rgba(0, 0, 0, 0.4), 0 0 0 1px var(--border)',
+        background: 'rgba(13, 15, 42, 0.8)',
+        backdropFilter: 'blur(20px)',
+        position: 'relative',
+        overflow: 'hidden'
+      }}>
         
         {/* Glow header accent */}
         <div style={{
@@ -274,6 +307,27 @@ export default function Register() {
 
         <div style={{ marginTop: '24px', paddingTop: '20px', borderTop: '1px solid var(--border)', fontSize: '12px', color: 'var(--text-secondary)', lineHeight: '1.5' }}>
           <strong>Note:</strong> Since Supabase serves as the single source of truth for both Web and Mobile apps, registering here creates a unified credential. Once registered, open the <strong>YKP Mobile App</strong> on your phone and log in using this email and password to start managing your provisioned switches.
+        </div>
+
+        <div style={{
+          marginTop: '24px',
+          paddingTop: '20px',
+          borderTop: '1px solid var(--border)',
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          fontSize: '12px',
+          color: 'var(--text-secondary)'
+        }}>
+          <span>Already have an account?</span>
+          <Link to={isAuthenticated() ? "/dashboard" : "/login"} style={{
+            color: 'var(--secondary)',
+            textDecoration: 'none',
+            fontWeight: '600',
+            transition: 'var(--transition)'
+          }}>
+            {isAuthenticated() ? "Back to Dashboard" : "Sign In"}
+          </Link>
         </div>
       </div>
     </div>

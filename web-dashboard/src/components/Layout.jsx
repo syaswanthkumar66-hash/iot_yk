@@ -1,10 +1,10 @@
 import { useState, useEffect } from 'react'
-import { NavLink, Outlet, useLocation } from 'react-router-dom'
+import { NavLink, Outlet, useLocation, Navigate } from 'react-router-dom'
 import {
   LayoutDashboard, Cpu, Download, Activity, Users,
-  Zap, Upload, Server, UserPlus
+  Zap, Upload, Server, UserPlus, LogOut
 } from 'lucide-react'
-import { getBackendUrl, setBackendUrl } from '../lib/api'
+import { getBackendUrl, setBackendUrl, logout, isAuthenticated } from '../lib/api'
 
 const NAV = [
   {
@@ -50,6 +50,12 @@ const PAGE_TITLES = {
 
 export default function Layout() {
   const location = useLocation()
+
+  // Guard check: redirect unauthenticated users to login
+  if (!isAuthenticated()) {
+    return <Navigate to="/login" replace />
+  }
+
   const page = PAGE_TITLES[location.pathname] || { title: 'YKP Dashboard', sub: '' }
 
   const [serverUrl, setServerUrl] = useState(getBackendUrl())
@@ -149,6 +155,34 @@ export default function Layout() {
           <div style={{ marginTop: 10, fontSize: 11, color: 'var(--text-muted)' }}>
             <span>{serverUrl.replace(/^https?:\/\//, '')}</span>
           </div>
+          <button 
+            onClick={() => {
+              if (confirm('Are you sure you want to log out?')) {
+                logout()
+              }
+            }}
+            style={{
+              marginTop: '12px',
+              width: '100%',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: '8px',
+              padding: '8px 12px',
+              background: 'rgba(255, 82, 82, 0.08)',
+              border: '1px solid rgba(255, 82, 82, 0.15)',
+              borderRadius: 'var(--radius-sm)',
+              color: 'var(--danger)',
+              fontSize: '12px',
+              fontWeight: '600',
+              cursor: 'pointer',
+              transition: 'var(--transition)'
+            }}
+            className="logout-btn"
+          >
+            <LogOut size={14} />
+            Log Out
+          </button>
         </div>
       </aside>
 
