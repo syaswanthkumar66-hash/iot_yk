@@ -1,0 +1,12 @@
+{
+  "name": "render-wakeup",
+  "version": "1.0.0",
+  "description": "Simple utility to wake up Render backend service on free tier via cron job",
+  "main": "wakeup.js",
+  "type": "module",
+  "scripts": {
+    "start": "node wakeup.js"
+  },
+  "dependencies": {},
+  "private": true
+}
