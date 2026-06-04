@@ -42,6 +42,5 @@ idf_component_register(
         freertos
         esp_adc
         esp_pm
-        network_provisioning
         bt
 )

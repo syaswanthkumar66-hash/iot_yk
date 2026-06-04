@@ -295,20 +295,6 @@ void app_main(void)
     ESP_LOGI(TAG, "  YKP v5 Firmware %s", YKP_FIRMWARE_VERSION);
     ESP_LOGI(TAG, "═══════════════════════════════════════");
 
-    /* 0. Power Management Init */
-#if CONFIG_PM_ENABLE
-    esp_pm_config_t pm_config = {
-        .max_freq_mhz = CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ,
-        .min_freq_mhz = 80,
-        .light_sleep_enable = true
-    };
-    if (esp_pm_configure(&pm_config) == ESP_OK) {
-        ESP_LOGI(TAG, "Power management configured: max=%dMHz, min=80MHz, light_sleep=enabled", CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ);
-    } else {
-        ESP_LOGE(TAG, "Power management configuration failed");
-    }
-#endif
-
     /* 1. NVS init */
     if (!nvs_config_init()) {
         ESP_LOGE(TAG, "NVS init failed — halting");
@@ -325,6 +311,22 @@ void app_main(void)
     bool has_id = nvs_config_get_device_id(g_device_id, sizeof(g_device_id));
     bool has_ssid = nvs_config_get_wifi_ssid(temp_ssid, sizeof(temp_ssid));
     bool has_pass = nvs_config_get_wifi_password(temp_password, sizeof(temp_password));
+    bool is_provisioned = has_id && has_ssid && has_pass;
+
+    /* 0. Power Management Init */
+#if CONFIG_PM_ENABLE
+    esp_pm_config_t pm_config = {
+        .max_freq_mhz = CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ,
+        .min_freq_mhz = 80,
+        .light_sleep_enable = is_provisioned
+    };
+    if (esp_pm_configure(&pm_config) == ESP_OK) {
+        ESP_LOGI(TAG, "Power management configured: max=%dMHz, min=80MHz, light_sleep=%s",
+                 CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ, is_provisioned ? "enabled" : "disabled");
+    } else {
+        ESP_LOGE(TAG, "Power management configuration failed");
+    }
+#endif
 
     if (!has_id || !has_ssid || !has_pass) {
         ESP_LOGW(TAG, "Device not fully provisioned (has_id=%d, has_ssid=%d, has_pass=%d)", has_id, has_ssid, has_pass);

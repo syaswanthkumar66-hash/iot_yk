@@ -1,163 +1,239 @@
 #include "ble_provision.h"
 #include "nvs_config.h"
 #include "esp_log.h"
-#include "esp_wifi.h"
-#include "network_provisioning/manager.h"
-#include "network_provisioning/scheme_ble.h"
+#include "esp_system.h"
 #include "cJSON.h"
 #include <string.h>
 
+/* NimBLE Includes */
+#include "nimble/nimble_port.h"
+#include "nimble/nimble_port_freertos.h"
+#include "host/ble_hs.h"
+#include "services/gap/ble_svc_gap.h"
+#include "services/gatt/ble_svc_gatt.h"
+
 static const char *TAG = "ble_prov";
 
-/* Custom endpoint handler to receive configuration JSON from the app */
-static esp_err_t ykp_config_handler(uint32_t session_id, const uint8_t *inbuf, ssize_t inlen,
-                                    uint8_t **outbuf, ssize_t *outlen, void *priv_data)
-{
-    if (inbuf == NULL || inlen <= 0) {
-        return ESP_ERR_INVALID_ARG;
+/* BLE State Variables */
+static uint16_t conn_handle = BLE_HS_CONN_HANDLE_NONE;
+static uint16_t tx_char_val_handle;
+static uint8_t own_addr_type;
+
+/* Nordic UART Service (NUS) UUIDs */
+static const ble_uuid128_t gatt_svr_svc_nus_uuid = 
+    BLE_UUID128_INIT(0x9E, 0xCA, 0xDC, 0x24, 0x0E, 0xE5, 0xA9, 0xE0, 0x93, 0xF3, 0xA3, 0xB5, 0x01, 0x00, 0x40, 0x6E);
+static const ble_uuid128_t gatt_svr_chr_nus_rx_uuid = 
+    BLE_UUID128_INIT(0x9E, 0xCA, 0xDC, 0x24, 0x0E, 0xE5, 0xA9, 0xE0, 0x93, 0xF3, 0xA3, 0xB5, 0x02, 0x00, 0x40, 0x6E);
+static const ble_uuid128_t gatt_svr_chr_nus_tx_uuid = 
+    BLE_UUID128_INIT(0x9E, 0xCA, 0xDC, 0x24, 0x0E, 0xE5, 0xA9, 0xE0, 0x93, 0xF3, 0xA3, 0xB5, 0x03, 0x00, 0x40, 0x6E);
+
+/* Helper to send logs back to the connected app over BLE TX */
+static void ble_serial_log(const char* message) {
+    ESP_LOGI(TAG, "%s", message);
+    if (conn_handle != BLE_HS_CONN_HANDLE_NONE) {
+        struct os_mbuf *om = ble_hs_mbuf_from_flat(message, strlen(message));
+        ble_gatts_notify_custom(conn_handle, tx_char_val_handle, om);
     }
-
-    /* Ensure null-terminated string for cJSON */
-    char *json_str = malloc(inlen + 1);
-    if (!json_str) return ESP_ERR_NO_MEM;
-    memcpy(json_str, inbuf, inlen);
-    json_str[inlen] = '\0';
-
-    ESP_LOGI(TAG, "Received custom config: %s", json_str);
-
-    cJSON *root = cJSON_Parse(json_str);
-    free(json_str);
-    if (!root) {
-        ESP_LOGE(TAG, "Failed to parse JSON config");
-        return ESP_FAIL;
-    }
-
-    cJSON *server_url = cJSON_GetObjectItem(root, "server_url");
-    if (server_url && server_url->valuestring) {
-        nvs_config_set_str("server_url", server_url->valuestring);
-        ESP_LOGI(TAG, "Saved server_url: %s", server_url->valuestring);
-    }
-
-    cJSON *device_type = cJSON_GetObjectItem(root, "device_type");
-    if (device_type && device_type->valuestring) {
-        nvs_config_set_str("device_type", device_type->valuestring);
-        ESP_LOGI(TAG, "Saved device_type: %s", device_type->valuestring);
-    }
-
-    cJSON_Delete(root);
-
-    /* Send empty response back */
-    *outbuf = malloc(1);
-    if (*outbuf) {
-        (*outbuf)[0] = 0;
-        *outlen = 1;
-    } else {
-        *outlen = 0;
-    }
-
-    return ESP_OK;
 }
 
-/* Event handler for provisioning events */
-static void prov_event_handler(void* arg, esp_event_base_t event_base,
-                               int32_t event_id, void* event_data)
+/* GATT Character Access Callback */
+static int gatt_svr_chr_access(uint16_t conn_handle, uint16_t attr_handle, 
+                               struct ble_gatt_access_ctxt *ctxt, void *arg) 
 {
-    if (event_base == NETWORK_PROV_EVENT) {
-        switch (event_id) {
-            case NETWORK_PROV_START:
-                ESP_LOGI(TAG, "Provisioning started");
-                break;
-            case NETWORK_PROV_WIFI_CRED_RECV: {
-                wifi_sta_config_t *wifi_sta_cfg = (wifi_sta_config_t *)event_data;
-                ESP_LOGI(TAG, "Received Wi-Fi credentials\n\tSSID     : %s\n\tPassword : %s",
-                         (const char *) wifi_sta_cfg->ssid,
-                         (const char *) wifi_sta_cfg->password);
+    if (ctxt->op == BLE_GATT_ACCESS_OP_WRITE_CHR) {
+        char rx_buffer[256];
+        int len = OS_MBUF_PKTLEN(ctxt->om);
+        if (len >= sizeof(rx_buffer)) len = sizeof(rx_buffer) - 1;
+        os_mbuf_copydata(ctxt->om, 0, len, rx_buffer);
+        rx_buffer[len] = '\0';
+
+        ESP_LOGI(TAG, "BLE RX: %s", rx_buffer);
+
+        /* 1. Format: WIFI:ssid,password */
+        if (strncmp(rx_buffer, "WIFI:", 5) == 0) {
+            char *ssid = strtok(rx_buffer + 5, ",");
+            char *password = strtok(NULL, ",");
+            if (ssid) {
+                nvs_config_set_str("wifi_ssid", ssid);
+                ble_serial_log("[CONFIG] Saved wifi_ssid");
+            }
+            if (password) {
+                nvs_config_set_str("wifi_password", password);
+                ble_serial_log("[CONFIG] Saved wifi_password");
+            } else {
+                nvs_config_set_str("wifi_password", "");
+                ble_serial_log("[CONFIG] Saved empty wifi_password");
+            }
+
+            ble_serial_log("[SUCCESS] Wi-Fi credentials saved. Restarting device...");
+            vTaskDelay(pdMS_TO_TICKS(1500));
+            esp_restart();
+        } 
+        /* 2. Format: JSON Configuration Block */
+        else if (rx_buffer[0] == '{') {
+            cJSON *root = cJSON_Parse(rx_buffer);
+            if (!root) {
+                ble_serial_log("[ERROR] JSON parsing failed");
+            } else {
+                bool restart_needed = false;
                 
-                nvs_config_set_str("wifi_ssid", (const char *)wifi_sta_cfg->ssid);
-                nvs_config_set_str("wifi_password", (const char *)wifi_sta_cfg->password);
-                break;
+                cJSON *server_url = cJSON_GetObjectItem(root, "server_url");
+                if (server_url && server_url->valuestring) {
+                    nvs_config_set_str("server_url", server_url->valuestring);
+                    ble_serial_log("[CONFIG] Saved server_url");
+                    restart_needed = true;
+                }
+                cJSON *device_type = cJSON_GetObjectItem(root, "device_type");
+                if (device_type && device_type->valuestring) {
+                    nvs_config_set_str("device_type", device_type->valuestring);
+                    ble_serial_log("[CONFIG] Saved device_type");
+                    restart_needed = true;
+                }
+                cJSON *device_id = cJSON_GetObjectItem(root, "device_id");
+                if (device_id && device_id->valuestring) {
+                    nvs_config_set_str("device_id", device_id->valuestring);
+                    ble_serial_log("[CONFIG] Saved device_id");
+                    restart_needed = true;
+                }
+                cJSON *device_name = cJSON_GetObjectItem(root, "device_name");
+                if (device_name && device_name->valuestring) {
+                    nvs_config_set_str("device_name", device_name->valuestring);
+                    ble_serial_log("[CONFIG] Saved device_name");
+                    restart_needed = true;
+                }
+                cJSON *wifi_ssid = cJSON_GetObjectItem(root, "wifi_ssid");
+                if (!wifi_ssid) wifi_ssid = cJSON_GetObjectItem(root, "ssid");
+                if (wifi_ssid && wifi_ssid->valuestring) {
+                    nvs_config_set_str("wifi_ssid", wifi_ssid->valuestring);
+                    ble_serial_log("[CONFIG] Saved wifi_ssid");
+                    restart_needed = true;
+                }
+                cJSON *wifi_pass = cJSON_GetObjectItem(root, "wifi_password");
+                if (!wifi_pass) wifi_pass = cJSON_GetObjectItem(root, "password");
+                if (!wifi_pass) wifi_pass = cJSON_GetObjectItem(root, "pass");
+                if (wifi_pass && wifi_pass->valuestring) {
+                    nvs_config_set_str("wifi_password", wifi_pass->valuestring);
+                    ble_serial_log("[CONFIG] Saved wifi_password");
+                    restart_needed = true;
+                }
+                cJSON_Delete(root);
+                
+                if (restart_needed) {
+                    ble_serial_log("[SUCCESS] Configuration saved. Restarting device...");
+                    vTaskDelay(pdMS_TO_TICKS(1500));
+                    esp_restart();
+                } else {
+                    ble_serial_log("[WARNING] JSON parsed but no valid config keys found");
+                }
             }
-            case NETWORK_PROV_WIFI_CRED_FAIL: {
-                network_prov_wifi_sta_fail_reason_t *reason = (network_prov_wifi_sta_fail_reason_t *)event_data;
-                ESP_LOGE(TAG, "Provisioning failed!\n\tReason : %s",
-                         (*reason == NETWORK_PROV_WIFI_STA_AUTH_ERROR) ?
-                         "Wi-Fi station authentication failed" : "Wi-Fi access-point not found");
-                /* Reset provisioning state so the user can try again */
-                network_prov_mgr_reset_wifi_sm_state_on_failure();
-                break;
-            }
-            case NETWORK_PROV_WIFI_CRED_SUCCESS:
-                ESP_LOGI(TAG, "Provisioning successful");
-                break;
-            case NETWORK_PROV_END:
-                /* De-initialize manager once provisioning is finished */
-                network_prov_mgr_deinit();
-                ESP_LOGI(TAG, "Provisioning ending. Restarting to apply settings...");
-                esp_restart(); /* Restart to ensure clean state with new config */
-                break;
-            default:
-                break;
+        } else {
+            ble_serial_log("[ERROR] Unknown command. Send WIFI:ssid,pass or JSON config.");
         }
     }
+    return 0;
 }
 
-bool ykp_ble_provision_start(void)
-{
-    /* Initialize Wi-Fi driver first since wifi_prov_mgr needs it */
-    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-    esp_wifi_init(&cfg);
-    esp_wifi_set_mode(WIFI_MODE_STA);
-    esp_wifi_start();
+/* GATT Services and Characteristics Registration */
+static const struct ble_gatt_svc_def gatt_svr_svcs[] = {
+    {
+        .type = BLE_GATT_SVC_TYPE_PRIMARY,
+        .uuid = &gatt_svr_svc_nus_uuid.u,
+        .characteristics = (struct ble_gatt_chr_def[]) {
+            { 
+                .uuid = &gatt_svr_chr_nus_rx_uuid.u, 
+                .access_cb = gatt_svr_chr_access, 
+                .flags = BLE_GATT_CHR_F_WRITE | BLE_GATT_CHR_F_WRITE_NO_RSP 
+            },
+            { 
+                .uuid = &gatt_svr_chr_nus_tx_uuid.u, 
+                .access_cb = gatt_svr_chr_access, 
+                .flags = BLE_GATT_CHR_F_NOTIFY, 
+                .val_handle = &tx_char_val_handle 
+            },
+            { 0 }
+        }
+    }, 
+    { 0 }
+};
 
-    /* Register the provisioning event handler */
-    esp_event_handler_register(NETWORK_PROV_EVENT, ESP_EVENT_ANY_ID, &prov_event_handler, NULL);
+/* GAP Event Callback */
+static int ble_gap_event(struct ble_gap_event *event, void *arg) {
+    switch (event->type) {
+        case BLE_GAP_EVENT_CONNECT:
+            conn_handle = (event->connect.status == 0) ? event->connect.conn_handle : BLE_HS_CONN_HANDLE_NONE;
+            if (conn_handle == BLE_HS_CONN_HANDLE_NONE) {
+                void ble_app_advertise(void);
+                ble_app_advertise();
+            } else {
+                ble_serial_log("[SYSTEM] BLE Client Connected");
+            }
+            break;
+        case BLE_GAP_EVENT_DISCONNECT:
+            conn_handle = BLE_HS_CONN_HANDLE_NONE;
+            void ble_app_advertise(void);
+            ble_app_advertise();
+            break;
+    }
+    return 0;
+}
 
-    /* Configuration for the provisioning manager */
-    network_prov_mgr_config_t config = {
-        .scheme = network_prov_scheme_ble,
-        .scheme_event_handler = NETWORK_PROV_SCHEME_BLE_EVENT_HANDLER_FREE_BTDM
-    };
+/* BLE Advertising setup */
+void ble_app_advertise(void) {
+    struct ble_gap_adv_params adv_params;
+    struct ble_hs_adv_fields fields;
+    
+    char adv_name[32] = {0};
+    char dev_id[9] = {0};
+    if (nvs_config_get_device_id(dev_id, sizeof(dev_id)) && strlen(dev_id) > 0) {
+        snprintf(adv_name, sizeof(adv_name), "YKP_PROV_%s", dev_id);
+    } else {
+        snprintf(adv_name, sizeof(adv_name), "YKP_PROV_SETUP");
+    }
 
-    /* Initialize provisioning manager with the configuration parameters */
-    if (network_prov_mgr_init(config) != ESP_OK) {
-        ESP_LOGE(TAG, "Provisioning manager initialization failed");
+    memset(&fields, 0, sizeof(fields));
+    fields.flags = BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP;
+    fields.name = (uint8_t *)adv_name;
+    fields.name_len = strlen(adv_name);
+    fields.name_is_complete = 1;
+    ble_gap_adv_set_fields(&fields);
+
+    memset(&adv_params, 0, sizeof(adv_params));
+    adv_params.conn_mode = BLE_GAP_CONN_MODE_UND;
+    adv_params.disc_mode = BLE_GAP_DISC_MODE_GEN;
+    ble_gap_adv_start(own_addr_type, NULL, BLE_HS_FOREVER, &adv_params, ble_gap_event, NULL);
+}
+
+/* Host Synchronization callback */
+static void ble_app_on_sync(void) {
+    ble_hs_id_infer_auto(0, &own_addr_type);
+    ble_app_advertise();
+}
+
+/* FreeRTOS NimBLE host task */
+void ble_host_task(void *param) {
+    nimble_port_run();
+    nimble_port_freertos_deinit();
+}
+
+/* Entry point to start the custom BLE provisioning manager */
+bool ykp_ble_provision_start(void) {
+    ESP_LOGI(TAG, "Starting NimBLE custom BLE provisioning...");
+    
+    nimble_port_init();
+    ble_hs_cfg.sync_cb = ble_app_on_sync;
+    
+    int rc = ble_gatts_count_cfg(gatt_svr_svcs);
+    if (rc != 0) {
+        ESP_LOGE(TAG, "Failed to count GATT service configs: %d", rc);
         return false;
     }
-
-    bool provisioned = false;
-    network_prov_mgr_is_wifi_provisioned(&provisioned);
-
-    /* Only start if not already provisioned */
-    if (!provisioned) {
-        ESP_LOGI(TAG, "Starting BLE provisioning...");
-
-        char device_name[32] = {0};
-        char device_id[9] = {0};
-        nvs_config_get_device_id(device_id, sizeof(device_id));
-        snprintf(device_name, sizeof(device_name), "YKP_PROV_%s", device_id);
-
-        /* Set custom endpoint for configuration */
-        network_prov_mgr_endpoint_create("ykp-config");
-
-        /* Define BLE service configuration */
-        uint8_t custom_service_uuid[] = {
-            /* LSB <---------------------------------------
-             * ---------------------------------------> MSB */
-            0xb4, 0xdf, 0x5a, 0x1c, 0x3f, 0x6b, 0xf4, 0xbf,
-            0xea, 0x4a, 0x82, 0x03, 0x04, 0x90, 0x1a, 0x02,
-        };
-        network_prov_scheme_ble_set_service_uuid(custom_service_uuid);
-
-        /* Start provisioning service */
-        network_prov_mgr_start_provisioning(NETWORK_PROV_SECURITY_1, NULL, device_name, NULL);
-
-        /* Register custom endpoint handler */
-        network_prov_mgr_endpoint_register("ykp-config", ykp_config_handler, NULL);
-    } else {
-        ESP_LOGI(TAG, "Already provisioned, de-initializing manager");
-        network_prov_mgr_deinit();
-        return true;
+    
+    rc = ble_gatts_add_svcs(gatt_svr_svcs);
+    if (rc != 0) {
+        ESP_LOGE(TAG, "Failed to add GATT services: %d", rc);
+        return false;
     }
-
+    
+    nimble_port_freertos_init(ble_host_task);
     return true;
 }

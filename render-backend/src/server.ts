@@ -40,6 +40,23 @@ app.get('/health', (_req, res) => {
   })
 })
 
+// ── Public SSL Certificate Endpoints (used by BLE provisioning client) ──
+app.get('/api/ssl-cert', (_req, res) => {
+  const cert = process.env.SSL_CERT
+  if (!cert) {
+    return res.status(404).send('SSL_CERT environment variable is not configured on this server.')
+  }
+  res.type('text/plain').send(cert)
+})
+
+app.get('/api/cert', (_req, res) => {
+  const cert = process.env.SSL_CERT
+  if (!cert) {
+    return res.status(404).send('SSL_CERT environment variable is not configured on this server.')
+  }
+  res.type('text/plain').send(cert)
+})
+
 // ── Serve Static Web Dashboard if built ────
 const distPath = path.join(__dirname, '../../web-dashboard/dist')
 if (fs.existsSync(distPath)) {

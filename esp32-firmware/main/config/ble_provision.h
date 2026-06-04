@@ -6,9 +6,8 @@
 /**
  * @brief Start BLE provisioning
  * 
- * Configures the network_provisioning manager with PROV_TRANSPORT_BLE using NimBLE.
- * Registers a custom endpoint "ykp-config" to receive device configuration
- * (server URL, device type) from the mobile app.
+ * Configures a direct NimBLE (NUS-style) service to receive Wi-Fi credentials
+ * and custom device configurations (server URL, device type, device ID, etc.).
  * 
  * @return true if successfully started
  * @return false on error
