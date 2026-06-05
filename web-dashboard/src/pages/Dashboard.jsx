@@ -3,7 +3,7 @@ import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'rec
 import {
   Cpu, Wifi, AlertTriangle, CheckCircle, ArrowUp, ArrowDown, Clock, Zap, Activity, Radio, RefreshCw
 } from 'lucide-react'
-import { fetchDevices } from '../lib/api'
+import { fetchDevices, getBackendUrl } from '../lib/api'
 import { supabase } from '../lib/supabase'
 
 const DEVICE_EMOJI = {
@@ -12,6 +12,80 @@ const DEVICE_EMOJI = {
   gateway: '🔀',
   motor: '⚙️'
 }
+
+const WssTester = () => {
+  const [status, setStatus] = useState('idle');
+  const [log, setLog] = useState('');
+
+  const runTest = () => {
+    setStatus('testing');
+    setLog('Connecting to WebSocket server...');
+    try {
+      const wsUrl = getBackendUrl().replace(/^http/, 'ws') + '/ws';
+      const ws = new WebSocket(wsUrl);
+
+      ws.onopen = () => {
+        setLog(prev => prev + '\n✓ TCP Connection established.');
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          if (data.type === 'CONNECTED') {
+            setLog(prev => prev + `\n✓ Received handshake from: ${data.server}`);
+            setStatus('success');
+            ws.close();
+          }
+        } catch (e) {
+          // Ignore binary/other messages
+        }
+      };
+
+      ws.onerror = (e) => {
+        setLog(prev => prev + '\n❌ WebSocket Error! Is the backend running?');
+        setStatus(prev => prev === 'testing' ? 'error' : prev);
+      };
+
+      ws.onclose = () => {
+        setStatus(prev => {
+          if (prev === 'testing') {
+            setLog(l => l + '\n❌ Connection closed prematurely.');
+            return 'error';
+          }
+          return prev;
+        });
+      };
+      
+      // Timeout
+      setTimeout(() => {
+        if (ws.readyState === WebSocket.CONNECTING) {
+          ws.close();
+          setLog(prev => prev + '\n❌ Connection timed out.');
+          setStatus('error');
+        }
+      }, 5000);
+    } catch (e) {
+      setLog(prev => prev + '\n❌ Failed to initialize WebSocket: ' + e.message);
+      setStatus('error');
+    }
+  };
+
+  return (
+    <div className="card fade-in" style={{ marginBottom: 24 }}>
+      <div className="flex-between" style={{ marginBottom: 16, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <div className="section-title" style={{ marginBottom: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
+          <Radio size={18} /> Cloud WebSocket Connectivity Test
+        </div>
+        <button className="btn btn-primary btn-sm" onClick={runTest} disabled={status === 'testing'}>
+          {status === 'testing' ? 'Testing...' : 'Run Test'}
+        </button>
+      </div>
+      <div style={{ background: '#0f172a', padding: 16, borderRadius: 8, color: '#10b981', fontFamily: 'monospace', whiteSpace: 'pre-wrap', fontSize: 13, minHeight: 60 }}>
+        {log || 'Click "Run Test" to verify if the Cloud WebSocket server is reachable from your browser.'}
+      </div>
+    </div>
+  );
+};
 
 // Generate static sample traffic points for activity graph
 const genChart = () =>
@@ -128,6 +202,9 @@ export default function Dashboard() {
         </div>
       ) : (
         <>
+          {/* ── WSS Tester ── */}
+          <WssTester />
+
           {/* ── Stats ── */}
           <div className="stats-grid fade-in fade-in-1">
             <div className="stat-card purple">
