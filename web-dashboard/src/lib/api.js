@@ -14,7 +14,7 @@ export function getBackendUrl() {
     const origin = window.location.origin
     // If it's the Vite dev port, fall back to backend default local port (10000)
     if (origin.includes('localhost:5173') || origin.includes('127.0.0.1:5173')) {
-      return 'http://localhost:10000'
+      return 'http://localhost:8080'
     }
     // If frontend is hosted on the SAME origin as the backend (unified deployment)
     if (origin.includes('iot-yk.onrender.com')) {
