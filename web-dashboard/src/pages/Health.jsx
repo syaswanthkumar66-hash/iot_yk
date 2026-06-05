@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, LineChart, Line, BarChart, Bar } from 'recharts'
 import { Activity, Cpu, Wifi, AlertTriangle, RefreshCw } from 'lucide-react'
 import { supabase } from '../lib/supabase'
+import { fetchDevices, fetchHealth, fetchHealthHistory } from '../lib/api'
 
 const TOOLTIP_STYLE = {
   contentStyle: { background: 'var(--bg-surface)', border: '1px solid var(--border)', borderRadius: 8 },
@@ -22,12 +23,7 @@ export default function Health() {
     async function loadDevices() {
       try {
         setLoading(true)
-        const { data, error } = await supabase
-          .from('devices')
-          .select('device_id')
-          .order('device_id')
-
-        if (error) throw error
+        const data = await fetchDevices()
         if (data && data.length > 0) {
           setDevices(data.map(d => d.device_id))
           setSelected(data[0].device_id)
@@ -46,31 +42,28 @@ export default function Health() {
     if (!selected) return
     try {
       setTelemetryLoading(true)
-      // Get latest snapshot from database
-      const { data: snapData, error: snapErr } = await supabase
-        .from('device_health')
-        .select('*')
-        .eq('device_id', selected)
-        .order('recorded_at', { ascending: false })
-        .limit(1)
-        .maybeSingle()
+      // Get latest snapshot from database via API
+      try {
+        const snapData = await fetchHealth(selected)
+        setSnapshot(snapData)
+      } catch (err) {
+        setSnapshot(null) // API throws 404 if no data
+      }
 
-      if (snapErr) throw snapErr
-      setSnapshot(snapData)
+      // Get historical telemetry points via API
+      let histData = []
+      try {
+        histData = await fetchHealthHistory(selected, 1) // last 1 hour
+      } catch (err) {
+        histData = []
+      }
 
-      // Get historical telemetry points (last 12 records) for graphs
-      const { data: histData, error: histErr } = await supabase
-        .from('device_health')
-        .select('*')
-        .eq('device_id', selected)
-        .order('recorded_at', { ascending: false })
-        .limit(12)
+      if (histData && histData.length > 0) {
+        // Reverse array if needed, but fetchHealthHistory already returns ascending
+        const recentHist = histData.slice(-20) // take last 20 points
 
-      if (histErr) throw histErr
-      if (histData) {
-        // Reverse array so time flows left-to-right
         setHistory(
-          histData
+          recentHist
             .map(h => ({
               t: new Date(h.recorded_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
               heap: Math.round((h.free_heap || 0) / 1024), // Convert to KB
@@ -78,7 +71,6 @@ export default function Health() {
               rssi: h.rssi || 0,
               rtt: h.rtt_ms || 0
             }))
-            .reverse()
         )
       }
     } catch (err) {
