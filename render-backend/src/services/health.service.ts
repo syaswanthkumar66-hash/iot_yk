@@ -1,6 +1,6 @@
 import { YkpPacket } from '../packet/parser'
 import { findTlv, tlvReadFloat, tlvReadUInt32, tlvReadInt8 } from '../packet/parser'
-import { insertHealthRecord, logAudit } from '../db/supabase'
+import { insertHealthRecord, logAudit, upsertDeviceState } from '../db/supabase'
 import { TlvType } from '../packet/constants'
 
 export interface HealthReportData {
@@ -34,6 +34,7 @@ export async function handleHealthReport(pkt: YkpPacket): Promise<void> {
 
   try {
     await insertHealthRecord(deviceId, health as unknown as Record<string, unknown>)
+    await upsertDeviceState(deviceId, { sensor_data: { rssi: health.rssi, free_heap: health.free_heap, uptime_sec: health.uptime_sec } })
     console.log(`[health] ${deviceId}: heap=${health.free_heap}, rssi=${health.rssi}, cpu=${health.cpu_usage}`)
   } catch (err) {
     console.error('[health] DB insert error:', err)

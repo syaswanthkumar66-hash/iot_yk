@@ -80,6 +80,11 @@ export default function Dashboard() {
       )
       .on(
         'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'device_state' },
+        () => { loadDashboardData() }
+      )
+      .on(
+        'postgres_changes',
         { event: 'INSERT', schema: 'public', table: 'audit_logs' },
         (payload) => {
           const log = payload.new

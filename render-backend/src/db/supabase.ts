@@ -41,6 +41,11 @@ export async function insertHealthRecord(deviceId: string, health: Record<string
   await supabase.from('device_health').insert({ device_id: deviceId, ...health })
 }
 
+export async function upsertDeviceState(deviceId: string, fields: Record<string, unknown>) {
+  await supabase.from('device_state').upsert({ device_id: deviceId, ...fields, updated_at: new Date().toISOString() },
+                                             { onConflict: 'device_id' })
+}
+
 export async function getActiveSession(deviceId: string) {
   const { data } = await supabase
     .from('device_sessions')

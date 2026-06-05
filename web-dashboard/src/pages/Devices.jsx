@@ -55,7 +55,9 @@ export default function Devices() {
           const updated = payload.new
           setDevices(prev =>
             prev.map(d =>
-              d.device_id === updated.device_id ? { ...d, relay_state: updated.relay_state } : d
+              d.device_id === updated.device_id 
+                ? { ...d, relay_state: updated.relay_state, rssi: updated.sensor_data?.rssi ?? d.rssi } 
+                : d
             )
           )
         }
