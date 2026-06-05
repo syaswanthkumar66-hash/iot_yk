@@ -11,6 +11,7 @@ import devicesApi from './api/devices'
 import healthApi  from './api/health'
 import otaApi     from './api/ota'
 import authApi    from './api/auth'
+import streamApi  from './api/stream'
 
 const PORT = parseInt(process.env.PORT ?? '8080')
 const app  = express()
@@ -71,6 +72,7 @@ app.use('/api/devices', devicesApi)
 app.use('/api/health',  healthApi)
 app.use('/api/ota',     otaApi)
 app.use('/api/auth',    authApi)
+app.use('/api/stream',  streamApi)
 
 // ── SPA routing fallback ──
 app.get('*', (req, res, next) => {

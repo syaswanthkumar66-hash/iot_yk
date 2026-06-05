@@ -1,10 +1,10 @@
 import { Router, Request, Response } from 'express'
 import { supabase } from '../db/supabase'
-import { sendToDevice } from '../router/route-engine'
-import { buildPacket, TlvBuilder } from '../packet/builder'
+import { TlvBuilder } from '../packet/builder'
 import { RouteType, ServiceId, OtaAction, QoS, TlvType } from '../packet/constants'
 import { v4 as uuidv4 } from 'uuid'
 import { authMiddleware } from '../middleware/auth'
+import { sendYkpPacket } from '../router/route-engine'
 
 const router = Router()
 router.use(authMiddleware)
@@ -70,7 +70,7 @@ router.post('/:jobId/start', async (req: Request, res: Response) => {
       .addUInt32(TlvType.VALUE_INT,    job.chunks_total)
       .build()
 
-    const pkt = buildPacket({
+    const sent = sendYkpPacket(job.device_id, {
       packetId:  Math.floor(Math.random() * 0xFFFFFF),
       sessionId: 0,
       sourceId:  'SERVER',
@@ -81,8 +81,6 @@ router.post('/:jobId/start', async (req: Request, res: Response) => {
       qos:       QoS.QOS_2,
       payload,
     })
-
-    const sent = sendToDevice(job.device_id, pkt)
     if (!sent) return res.status(503).json({ error: 'Device offline' })
 
     await supabase.from('ota_jobs')

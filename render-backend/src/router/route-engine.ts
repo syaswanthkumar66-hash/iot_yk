@@ -1,6 +1,8 @@
 import { WebSocket } from 'ws'
-import { buildPacket } from '../packet/builder'
-import { RouteType, ServiceId, QoS } from '../packet/constants'
+import { buildPacket, BuildPacketOptions } from '../packet/builder'
+import { RouteType, ServiceId, QoS, FLAGS, YKP_AUTH_TAG_SIZE } from '../packet/constants'
+import { sessionManager } from './session-manager'
+import { encrypt } from '../security/aes-gcm'
 
 // Map of deviceId → WebSocket connection
 export const deviceConnections = new Map<string, WebSocket>()
@@ -45,6 +47,35 @@ export function sendToDevice(deviceId: string, buf: Buffer): boolean {
   if (!ws || ws.readyState !== WebSocket.OPEN) return false
   ws.send(buf)
   return true
+}
+
+export function sendYkpPacket(deviceId: string, opts: BuildPacketOptions): boolean {
+  const session = sessionManager.getSession(deviceId)
+  
+  if (session && session.sessionKey && opts.payload && opts.payload.length > 0) {
+    opts.encrypted = true
+    opts.sessionId = session.sessionId
+    
+    // Generate AAD (33 byte header)
+    const emptyPkt = buildPacket({ ...opts, payload: Buffer.alloc(0), authTag: Buffer.alloc(YKP_AUTH_TAG_SIZE) })
+    const aad = emptyPkt.subarray(0, 33)
+    
+    const { ciphertext, authTag } = encrypt(
+      session.sessionKey,
+      opts.sessionId,
+      opts.packetId,
+      aad,
+      opts.payload
+    )
+    
+    opts.payload = ciphertext
+    opts.authTag = authTag
+  } else if (session) {
+    opts.sessionId = session.sessionId
+  }
+  
+  const rawBuf = buildPacket(opts)
+  return sendToDevice(deviceId, rawBuf)
 }
 
 export function getOnlineDevices(): string[] {

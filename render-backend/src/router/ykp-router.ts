@@ -12,8 +12,9 @@ import { generateEphemeralKeyPair, generateNonce,
 import { logAudit, upsertDevice } from '../db/supabase'
 import {
   ServiceId, SecAction, RelayAction, HealthAction,
-  SensorAction, OtaAction, RouteType, QoS, TlvType
+  SensorAction, OtaAction, RouteType, QoS, TlvType, FLAGS
 } from '../packet/constants'
+import { decrypt } from '../security/aes-gcm'
 
 export function startYkpRouter(wss: WebSocketServer): void {
   wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
@@ -130,6 +131,25 @@ export function startYkpRouter(wss: WebSocketServer): void {
         if (!session.replayGuard.check(pkt.header.packetId)) {
           console.warn(`[replay] blocked from ${deviceId} id=${pkt.header.packetId}`)
           return
+        }
+
+        // ── Decrypt Payload if ENCRYPTED ─────────────────
+        if ((pkt.header.flags & FLAGS.ENCRYPTED) !== 0) {
+          try {
+            const aad = data.subarray(0, 33)
+            const plaintext = decrypt(
+              session.sessionKey,
+              pkt.header.sessionId,
+              pkt.header.packetId,
+              aad,
+              pkt.payload,
+              pkt.authTag
+            )
+            pkt.payload = plaintext
+          } catch (err: any) {
+            console.error(`[decrypt] Failed for ${deviceId}: ${err.message}`)
+            return
+          }
         }
 
         // ── Dispatch to services ──────────────────────

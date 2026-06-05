@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { Cpu, Wifi, Search, RefreshCw, ToggleLeft, ToggleRight } from 'lucide-react'
 import { fetchDevices, sendCommand } from '../lib/api'
 import { supabase } from '../lib/supabase'
+import { useSSE } from '../lib/useSSE'
 
 const DEVICE_EMOJI = {
   switch: '🔌',
@@ -17,6 +18,8 @@ export default function Devices() {
   const [search, setSearch] = useState('')
   const [filter, setFilter] = useState('all')
 
+  const { lastStateChange, lastPresenceChange, isConnected } = useSSE()
+
   const loadDevices = async () => {
     try {
       setLoading(true)
@@ -30,44 +33,32 @@ export default function Devices() {
     }
   }
 
+  // Load devices on mount
   useEffect(() => {
     loadDevices()
-
-    // Subscribe to realtime database updates
-    const channel = supabase
-      .channel('devices-live-state')
-      .on(
-        'postgres_changes',
-        { event: 'UPDATE', schema: 'public', table: 'devices' },
-        (payload) => {
-          const updated = payload.new
-          setDevices(prev =>
-            prev.map(d =>
-              d.device_id === updated.device_id ? { ...d, is_online: updated.is_online, ip_address: updated.ip_address, last_seen: updated.last_seen } : d
-            )
-          )
-        }
-      )
-      .on(
-        'postgres_changes',
-        { event: 'UPDATE', schema: 'public', table: 'device_state' },
-        (payload) => {
-          const updated = payload.new
-          setDevices(prev =>
-            prev.map(d =>
-              d.device_id === updated.device_id 
-                ? { ...d, relay_state: updated.relay_state, rssi: updated.sensor_data?.rssi ?? d.rssi } 
-                : d
-            )
-          )
-        }
-      )
-      .subscribe()
-
-    return () => {
-      supabase.removeChannel(channel)
-    }
   }, [])
+
+  // Process SSE State Changes
+  useEffect(() => {
+    if (lastStateChange) {
+      setDevices(prev => prev.map(d => 
+        d.device_id === lastStateChange.deviceId 
+          ? { ...d, relay_state: lastStateChange.relay_state } 
+          : d
+      ))
+    }
+  }, [lastStateChange])
+
+  // Process SSE Presence Changes
+  useEffect(() => {
+    if (lastPresenceChange) {
+      setDevices(prev => prev.map(d => 
+        d.device_id === lastPresenceChange.deviceId 
+          ? { ...d, is_online: lastPresenceChange.is_online } 
+          : d
+      ))
+    }
+  }, [lastPresenceChange])
 
   const toggle = async (id, currentState) => {
     const nextAction = currentState ? 2 : 1 // 1=ON (RELAY_ON), 2=OFF (RELAY_OFF)

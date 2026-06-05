@@ -1,13 +1,41 @@
 import { Router, Request, Response } from 'express'
 import { supabase } from '../db/supabase'
-import { deviceConnections } from '../router/route-engine'
-import { buildPacket } from '../packet/builder'
-import { RouteType, ServiceId, RelayAction, QoS } from '../packet/constants'
-import { sendToDevice } from '../router/route-engine'
+import { sendYkpPacket, deviceConnections } from '../router/route-engine'
+import { RouteType, QoS } from '../packet/constants'
 import { authMiddleware } from '../middleware/auth'
 
 const router = Router()
 router.use(authMiddleware)
+
+/** POST /api/devices/register — Register a new hardware device */
+router.post('/register', async (req: Request, res: Response) => {
+  try {
+    const user = (req as any).user
+    if (!user) {
+      return res.status(401).json({ error: 'Unauthorized' })
+    }
+
+    // Generate a unique 8-character ID
+    const generateId = () => 'MT' + Math.floor(100000 + Math.random() * 900000).toString()
+    const deviceId = generateId()
+
+    const { error } = await supabase.from('devices').insert({
+      device_id: deviceId,
+      user_id: user.id, // Enforces RLS ownership
+      device_type: req.body.device_type || 'switch',
+      device_name: req.body.device_name || 'New Device',
+    })
+
+    if (error) {
+      return res.status(500).json({ error: error.message })
+    }
+
+    return res.json({ success: true, device_id: deviceId })
+  } catch (err: any) {
+    console.error('[devices api] error:', err.message || err)
+    return res.status(500).json({ error: 'Registration failed' })
+  }
+})
 
 /** GET /api/devices — list all devices */
 router.get('/', async (_req: Request, res: Response) => {
@@ -59,7 +87,7 @@ router.post('/:id/command', async (req: Request, res: Response) => {
     return res.status(503).json({ error: 'Device offline' })
   }
 
-  const pkt = buildPacket({
+  const sent = sendYkpPacket(deviceId, {
     packetId:  Math.floor(Math.random() * 0xFFFFFF),
     sessionId: 0,
     sourceId:  'SERVER',
@@ -69,8 +97,6 @@ router.post('/:id/command', async (req: Request, res: Response) => {
     actionId:  action,
     qos:       QoS.QOS_2,
   })
-
-  const sent = sendToDevice(deviceId, pkt)
   return res.json({ success: sent, deviceId, service, action })
 })
 
