@@ -218,10 +218,11 @@ export default function Devices() {
               </div>
 
               {d.is_online && d.device_type === 'switch' && (
-                <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid var(--border)', display: 'flex', gap: 8 }}>
+                <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
                   <button
                     onClick={() => toggle(d.device_id, d.relay_state)}
-                    className={`btn btn-sm w-full ${d.relay_state ? 'btn-danger' : 'btn-success'}`}
+                    className={`btn btn-sm ${d.relay_state ? 'btn-danger' : 'btn-success'}`}
+                    style={{ flex: 1 }}
                   >
                     {d.relay_state ? (
                       <>
@@ -233,6 +234,26 @@ export default function Devices() {
                       </>
                     )}
                   </button>
+                  {d.rtt_ms !== undefined && d.rtt_ms !== null && (
+                    <span
+                      style={{
+                        fontFamily: 'var(--font-mono)',
+                        fontSize: '12px',
+                        fontWeight: '600',
+                        padding: '4px 8px',
+                        borderRadius: '6px',
+                        backgroundColor: 'rgba(255, 255, 255, 0.05)',
+                        color:
+                          d.rtt_ms > 200
+                            ? 'var(--danger)'
+                            : d.rtt_ms > 100
+                            ? 'var(--warning)'
+                            : 'var(--success)'
+                      }}
+                    >
+                      {d.rtt_ms} ms
+                    </span>
+                  )}
                 </div>
               )}
             </div>
