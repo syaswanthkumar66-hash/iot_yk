@@ -11,6 +11,7 @@ export interface BuildPacketOptions {
   actionId:  number
   qos?:      QoS
   encrypted?: boolean
+  ack?:      boolean
   payload?:  Buffer
   authTag?:  Buffer
 }
@@ -29,6 +30,7 @@ export function buildPacket(opts: BuildPacketOptions): Buffer {
   buf[offset++] = YKP_VERSION
   let flags = (opts.qos ?? QoS.QOS_0) & FLAGS.QOS_MASK
   if (opts.encrypted) flags |= FLAGS.ENCRYPTED
+  if (opts.ack) flags |= FLAGS.ACK
   buf[offset++] = flags
 
   // packetId, sessionId

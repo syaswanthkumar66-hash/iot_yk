@@ -30,8 +30,28 @@ bool ykp_security_init(ykp_security_ctx_t *ctx)
     /* Load device long-term ECDH private key from NVS */
     size_t len = YKP_EC_PRIVKEY_LEN;
     if (!nvs_config_get_blob("private_key", ctx->device_private_key, &len)) {
-        ESP_LOGE(TAG, "no private_key in NVS — device not provisioned");
-        return false;
+        ESP_LOGW(TAG, "no private_key in NVS - generating new key pair...");
+        
+        psa_key_attributes_t attr = PSA_KEY_ATTRIBUTES_INIT;
+        psa_set_key_type(&attr, PSA_KEY_TYPE_ECC_KEY_PAIR(PSA_ECC_FAMILY_SECP_R1));
+        psa_set_key_bits(&attr, 256);
+        psa_set_key_usage_flags(&attr, PSA_KEY_USAGE_EXPORT | PSA_KEY_USAGE_SIGN_HASH);
+        psa_set_key_algorithm(&attr, PSA_ALG_ECDSA(PSA_ALG_SHA_256));
+
+        psa_key_id_t key_id;
+        if (psa_generate_key(&attr, &key_id) != PSA_SUCCESS) {
+            ESP_LOGE(TAG, "Failed to generate device key");
+            return false;
+        }
+
+        size_t out_len;
+        if (psa_export_key(key_id, ctx->device_private_key, YKP_EC_PRIVKEY_LEN, &out_len) == PSA_SUCCESS) {
+            nvs_config_set_blob("private_key", ctx->device_private_key, out_len);
+        }
+        if (psa_export_public_key(key_id, ctx->device_public_key, YKP_EC_PUBKEY_LEN, &out_len) == PSA_SUCCESS) {
+            nvs_config_set_blob("public_key", ctx->device_public_key, out_len);
+        }
+        psa_destroy_key(key_id);
     }
 
     /* Load device public key */

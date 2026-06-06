@@ -18,6 +18,7 @@ typedef struct {
     ykp_qos_t qos;
     uint8_t  retries;
     int64_t  next_retry_ms;
+    int64_t  sent_time_ms;
     bool     waiting_pubrec;   /* QoS2 phase 1 */
     bool     waiting_pubcomp;  /* QoS2 phase 2 */
     bool     active;
@@ -35,5 +36,7 @@ void ykp_qos_ack(ykp_qos_engine_t *engine, uint32_t packet_id);
 void ykp_qos_pubrec(ykp_qos_engine_t *engine, uint32_t packet_id);
 void ykp_qos_pubcomp(ykp_qos_engine_t *engine, uint32_t packet_id);
 void ykp_qos_tick(ykp_qos_engine_t *engine);
+
+extern uint32_t g_last_rtt_ms;
 
 #endif /* YKP_QOS_H */

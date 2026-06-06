@@ -5,6 +5,8 @@
 
 static const char *TAG = "ykp_qos";
 
+uint32_t g_last_rtt_ms = 45; // Default fallback latency
+
 void ykp_qos_init(ykp_qos_engine_t *engine, ykp_send_fn_t send_fn)
 {
     memset(engine, 0, sizeof(*engine));
@@ -27,6 +29,7 @@ bool ykp_qos_enqueue(ykp_qos_engine_t *engine, uint32_t packet_id,
             p->qos            = qos;
             p->retries        = 0;
             p->next_retry_ms  = esp_timer_get_time() / 1000;
+            p->sent_time_ms   = esp_timer_get_time() / 1000;
             p->waiting_pubrec = (qos == YKP_QOS_2);
             p->waiting_pubcomp= false;
             p->active         = true;
@@ -44,7 +47,14 @@ void ykp_qos_ack(ykp_qos_engine_t *engine, uint32_t packet_id)
         if (engine->slots[i].active && engine->slots[i].packet_id == packet_id
             && engine->slots[i].qos == YKP_QOS_1) {
             engine->slots[i].active = false;
-            ESP_LOGD(TAG, "QoS1 ACK pkt=%lu", (unsigned long)packet_id);
+            
+            // Calculate RTT/latency
+            int64_t rtt = (esp_timer_get_time() / 1000) - engine->slots[i].sent_time_ms;
+            if (rtt >= 0 && rtt < 10000) {
+                g_last_rtt_ms = (uint32_t)rtt;
+            }
+            ESP_LOGI(TAG, "QoS1 ACK received for pkt=%lu, latency=%lu ms", 
+                     (unsigned long)packet_id, (unsigned long)g_last_rtt_ms);
             return;
         }
     }

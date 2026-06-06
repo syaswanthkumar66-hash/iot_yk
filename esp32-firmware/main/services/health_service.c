@@ -3,6 +3,7 @@
 #include "ykp_packet.h"
 #include "ykp_constants.h"
 #include "nvs_config.h"
+#include "ykp_qos.h"
 #include <string.h>
 #include <math.h>
 #include "esp_log.h"
@@ -56,7 +57,7 @@ void health_service_send_report(void)
     ykp_tlv_add_uint8(&b,  TLV_RSSI,        (uint8_t)((int8_t)rssi));
     ykp_tlv_add_float(&b,  TLV_VALUE_FLOAT, temp);
     ykp_tlv_add_float(&b,  TLV_VALUE_FLOAT, 0.0f);  /* packet_loss */
-    ykp_tlv_add_float(&b,  TLV_VALUE_FLOAT, 45.0f); /* rtt_ms */
+    ykp_tlv_add_float(&b,  TLV_VALUE_FLOAT, (float)g_last_rtt_ms); /* rtt_ms */
     ykp_tlv_add_uint64(&b, TLV_TIMESTAMP,   uptime_sec);
     ykp_tlv_add_uint32(&b, TLV_VALUE_INT,   s_restart_count);
     ykp_tlv_add_string(&b, TLV_DEVICE_ID,   s_device_id);

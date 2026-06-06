@@ -50,7 +50,8 @@ router.get('/', async (_req: Request, res: Response) => {
       is_online: deviceConnections.has(d.device_id),
       relay_state: d.device_state?.relay_state || false,
       rssi: d.device_state?.sensor_data?.rssi,
-      free_heap: d.device_state?.sensor_data?.free_heap
+      free_heap: d.device_state?.sensor_data?.free_heap,
+      rtt_ms: d.device_state?.sensor_data?.rtt_ms
     }))
     return res.json(devices)
   } catch (err: any) {
@@ -70,7 +71,8 @@ router.get('/:id', async (req: Request, res: Response) => {
       is_online: deviceConnections.has(data.device_id),
       relay_state: data.device_state?.relay_state || false,
       rssi: data.device_state?.sensor_data?.rssi,
-      free_heap: data.device_state?.sensor_data?.free_heap
+      free_heap: data.device_state?.sensor_data?.free_heap,
+      rtt_ms: data.device_state?.sensor_data?.rtt_ms
     })
   } catch (err: any) {
     console.error('[devices api] error:', err.message || err)

@@ -21,6 +21,7 @@ create table if not exists devices (
     group_ids    integer[] default '{}',
     location     text,
     notes        text,
+    user_id      uuid references auth.users(id) on delete set null,
     created_at   timestamptz default now()
 );
 

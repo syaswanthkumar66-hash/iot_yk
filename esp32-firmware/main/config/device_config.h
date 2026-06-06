@@ -11,6 +11,7 @@
 /* Relay / Switch Output */
 #define GPIO_RELAY_OUTPUT       4    /* HIGH=ON, LOW=OFF */
 #define GPIO_STATUS_LED         2    /* Built-in LED (active high) */
+#define GPIO_ERROR_LED          13   /* Red LED for error indication (active high) */
 #define GPIO_BUTTON_INPUT       0    /* Physical button (active low, pull-up) */
 
 /* Sensor Inputs */

@@ -152,6 +152,24 @@ export function startYkpRouter(wss: WebSocketServer): void {
           }
         }
 
+        // ── Auto ACK for QoS 1 packets ──────────────────
+        const qos = pkt.header.flags & FLAGS.QOS_MASK
+        if (qos === QoS.QOS_1) {
+          const ackPkt = buildPacket({
+            packetId: pkt.header.packetId,
+            sessionId: pkt.header.sessionId,
+            sourceId: 'SERVER',
+            destId: deviceId,
+            routeType: RouteType.DIRECT,
+            serviceId: serviceId,
+            actionId: actionId,
+            qos: QoS.QOS_0, // ACKs are QoS 0
+            ack: true,
+          })
+          ws.send(ackPkt)
+          console.log(`[router] Sent QoS1 ACK for packet ID: ${pkt.header.packetId} from ${deviceId}`)
+        }
+
         // ── Dispatch to services ──────────────────────
         switch (serviceId) {
           case ServiceId.HEALTH:

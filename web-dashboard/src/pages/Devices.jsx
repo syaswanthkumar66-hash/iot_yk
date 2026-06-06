@@ -186,6 +186,37 @@ export default function Devices() {
                 </div>
               </div>
 
+              <div style={{ marginBottom: 14 }}>
+                <div
+                  style={{
+                    fontSize: 11,
+                    color: 'var(--text-muted)',
+                    marginBottom: 4,
+                    textTransform: 'uppercase',
+                    letterSpacing: '0.5px',
+                    fontWeight: 600
+                  }}
+                >
+                  Latency (RTT)
+                </div>
+                <div
+                  style={{
+                    fontFamily: 'var(--font-mono)',
+                    fontSize: 13,
+                    color:
+                      !d.is_online
+                        ? 'var(--text-muted)'
+                        : d.rtt_ms > 200
+                        ? 'var(--danger)'
+                        : d.rtt_ms > 100
+                        ? 'var(--warning)'
+                        : 'var(--success)'
+                  }}
+                >
+                  {d.is_online && d.rtt_ms !== undefined && d.rtt_ms !== null ? `${d.rtt_ms} ms` : '—'}
+                </div>
+              </div>
+
               {d.is_online && d.device_type === 'switch' && (
                 <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid var(--border)', display: 'flex', gap: 8 }}>
                   <button

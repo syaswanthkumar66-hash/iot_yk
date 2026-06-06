@@ -8,6 +8,7 @@ idf_component_register(
         "ykp_core/ykp_qos.c"
         "transport/ykp_websocket.c"
         "transport/ykp_udp.c"
+        "transport/legacy_udp.c"
         "services/relay_service.c"
         "services/sensor_service.c"
         "services/health_service.c"
@@ -43,4 +44,5 @@ idf_component_register(
         esp_adc
         esp_pm
         bt
+        mdns
 )

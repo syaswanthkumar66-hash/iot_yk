@@ -5,6 +5,10 @@
 #include "esp_websocket_client.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "esp_crt_bundle.h"
+#include "nvs_config.h"
+#include "mbedtls/x509_crt.h"
+#include "mbedtls/error.h"
 
 static const char *TAG = "ykp_ws";
 
@@ -52,6 +56,54 @@ static void ws_event_handler(void *arg, esp_event_base_t event_base,
 
 bool ykp_ws_init(const char *server_url)
 {
+    static char ssl_cert_buf[2048];
+    bool has_custom_cert = nvs_config_get_str("ssl_cert", ssl_cert_buf, sizeof(ssl_cert_buf));
+    if (has_custom_cert && strlen(ssl_cert_buf) > 0) {
+        // Sanitize certificate: replace literal "\n" strings with real 0x0A newlines
+        char cleaned_cert[2048] = {0};
+        int clean_idx = 0;
+        int len = strlen(ssl_cert_buf);
+        for (int i = 0; i < len && clean_idx < sizeof(cleaned_cert) - 2; i++) {
+            if (ssl_cert_buf[i] == '\\' && i + 1 < len && ssl_cert_buf[i+1] == 'n') {
+                cleaned_cert[clean_idx++] = '\n';
+                i++; // Skip the 'n'
+            } else {
+                cleaned_cert[clean_idx++] = ssl_cert_buf[i];
+            }
+        }
+        
+        // mbedTLS strongly requires PEM files to end with a newline
+        if (clean_idx > 0 && cleaned_cert[clean_idx - 1] != '\n') {
+            cleaned_cert[clean_idx++] = '\n';
+        }
+        cleaned_cert[clean_idx] = '\0';
+        
+        // Copy back to static buffer
+        strncpy(ssl_cert_buf, cleaned_cert, sizeof(ssl_cert_buf));
+        
+        // Validate that the certificate is actually complete!
+        if (strstr(ssl_cert_buf, "-----END CERTIFICATE-----") == NULL) {
+            ESP_LOGE(TAG, "Corrupted/Truncated SSL Certificate found in NVS! Discarding and using default bundle.");
+            has_custom_cert = false;
+        } else {
+            // Strictly validate using mbedtls before trusting it
+            mbedtls_x509_crt test_crt;
+            mbedtls_x509_crt_init(&test_crt);
+            int ret = mbedtls_x509_crt_parse(&test_crt, (const unsigned char *)cleaned_cert, strlen(cleaned_cert) + 1);
+            mbedtls_x509_crt_free(&test_crt);
+            
+            if (ret != 0) {
+                ESP_LOGE(TAG, "Strict mbedtls parse failed (-0x%04X). Cert is corrupted! Falling back to default bundle.", -ret);
+                has_custom_cert = false;
+                nvs_config_set_str("ssl_cert", ""); // Erase corrupt cert from NVS
+            } else {
+                ESP_LOGI(TAG, "Loaded custom SSL certificate from NVS (len: %d) and passed strict validation.", (int)strlen(ssl_cert_buf));
+            }
+        }
+    } else {
+        has_custom_cert = false;
+    }
+
     esp_websocket_client_config_t ws_cfg = {
         .uri                = server_url,
         .reconnect_timeout_ms = YKP_WS_RECONNECT_MS,
@@ -61,6 +113,19 @@ bool ykp_ws_init(const char *server_url)
         .task_stack           = TASK_STACK_WS,
         .task_prio            = TASK_PRIO_WS,
     };
+
+    // Use the custom ssl_cert provided via BLE if available (the user updated the app to send the correct Root CA!)
+    // Otherwise, fall back to the built-in ESP-IDF root CA bundle (or skip verification if configured in sdkconfig).
+    if (has_custom_cert) {
+        ws_cfg.cert_pem = ssl_cert_buf;
+    } else {
+#if CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY
+        ws_cfg.crt_bundle_attach = NULL;
+        ws_cfg.skip_cert_common_name_check = true;
+#else
+        ws_cfg.crt_bundle_attach = esp_crt_bundle_attach;
+#endif
+    }
 
     s_ws_client = esp_websocket_client_init(&ws_cfg);
     if (!s_ws_client) {

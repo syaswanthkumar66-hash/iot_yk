@@ -4,6 +4,7 @@
 #include "ykp_constants.h"
 #include "nvs_config.h"
 #include <string.h>
+#include "ble_provision.h"
 #include "driver/gpio.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
@@ -37,36 +38,112 @@ static void send_ack(uint32_t packet_id, uint32_t session_id, const char *dest_i
     ykp_packet_free(pkt);
 }
 
+static void notify_ble_sync(void)
+{
+    if (ykp_ble_is_connected()) {
+        char buf[64];
+        snprintf(buf, sizeof(buf), "{\"status\": \"state_changed\", \"relay_state\": %s}", s_state ? "true" : "false");
+        ble_notify_status(buf);
+    }
+}
+
+#include "nvs_flash.h"
+#include "esp_system.h"
+#include "esp_sleep.h"
+#include "driver/rtc_io.h"
+
 static void button_poll_task(void *arg)
 {
     bool last_btn_state = true;
+    uint32_t press_start_time = 0;
+    
+    // Tap tracking variables
+    uint8_t tap_count = 0;
+    uint32_t last_tap_time = 0;
+
     while (1) {
         bool current_btn_state = gpio_get_level(GPIO_BUTTON_INPUT);
+
+        // 1. Detect Button Press (Falling Edge)
         if (last_btn_state && !current_btn_state) {
-            vTaskDelay(pdMS_TO_TICKS(50));
+            vTaskDelay(pdMS_TO_TICKS(50)); // debounce
             if (gpio_get_level(GPIO_BUTTON_INPUT) == 0) {
-                ESP_LOGI(TAG, "Local button press detected!");
-                
-                // Blink status LED two times for control indication
-                gpio_set_level(GPIO_STATUS_LED, 1);
-                vTaskDelay(pdMS_TO_TICKS(150));
-                gpio_set_level(GPIO_STATUS_LED, 0);
-                vTaskDelay(pdMS_TO_TICKS(150));
-                gpio_set_level(GPIO_STATUS_LED, 1);
-                vTaskDelay(pdMS_TO_TICKS(150));
-                gpio_set_level(GPIO_STATUS_LED, 0);
-                vTaskDelay(pdMS_TO_TICKS(150));
+                press_start_time = xTaskGetTickCount();
+            }
+        } 
+        // 2. Detect Button Release (Rising Edge)
+        else if (!last_btn_state && current_btn_state) {
+            vTaskDelay(pdMS_TO_TICKS(50)); // debounce
+            if (gpio_get_level(GPIO_BUTTON_INPUT) == 1 && press_start_time > 0) {
+                uint32_t press_duration = (xTaskGetTickCount() - press_start_time) * portTICK_PERIOD_MS;
+                press_start_time = 0;
 
-                // Toggle states
-                s_state = !s_state;
-                gpio_set_level(GPIO_RELAY_OUTPUT, s_state ? 1 : 0);
-                gpio_set_level(GPIO_STATUS_LED,   s_state ? 1 : 0);
-                ESP_LOGI(TAG, "Local toggle state -> %s", s_state ? "ON" : "OFF");
-
-                // Report new state to backend
-                send_ack(0, 0, "SERVER");
+                if (press_duration < 5000) {
+                    tap_count++;
+                    last_tap_time = xTaskGetTickCount();
+                    
+                    if (tap_count == 1) {
+                        // INSTANT SINGLE TAP RESPONSE
+                        ESP_LOGI(TAG, "Instant Single Tap. Toggling relay.");
+                        s_state = !s_state;
+                        gpio_set_level(GPIO_RELAY_OUTPUT, s_state ? 1 : 0);
+                        gpio_set_level(GPIO_STATUS_LED,   s_state ? 1 : 0);
+                        send_ack(0, 0, "SERVER");
+                        notify_ble_sync();
+                    }
+                }
+            }
+        } 
+        // 3. Detect Long Press while being held down
+        else if (!last_btn_state && !current_btn_state) {
+            if (press_start_time > 0) {
+                uint32_t hold_duration = (xTaskGetTickCount() - press_start_time) * portTICK_PERIOD_MS;
+                if (hold_duration >= 5000) {
+                    ESP_LOGW(TAG, "5-SECOND LONG PRESS DETECTED! Erasing NVS and Factory Resetting...");
+                    for (int i = 0; i < 10; i++) {
+                        gpio_set_level(GPIO_STATUS_LED, 1);
+                        vTaskDelay(pdMS_TO_TICKS(100));
+                        gpio_set_level(GPIO_STATUS_LED, 0);
+                        vTaskDelay(pdMS_TO_TICKS(100));
+                    }
+                    nvs_flash_erase();
+                    esp_restart();
+                }
             }
         }
+        
+        // 4. Handle tap timeout (waiting for double tap)
+        if (tap_count > 0 && current_btn_state == 1) { // Only if button is released
+            uint32_t time_since_last_tap = (xTaskGetTickCount() - last_tap_time) * portTICK_PERIOD_MS;
+            
+            if (tap_count >= 2) {
+                // Double tap executed
+                ESP_LOGW(TAG, "DOUBLE TAP DETECTED! Entering Deep Sleep (Shutdown)...");
+                tap_count = 0;
+                
+                // Turn relay off safely before sleeping
+                s_state = false;
+                gpio_set_level(GPIO_RELAY_OUTPUT, 0);
+                gpio_set_level(GPIO_STATUS_LED, 0);
+                send_ack(0, 0, "SERVER");
+                notify_ble_sync();
+                
+                vTaskDelay(pdMS_TO_TICKS(500)); // allow network to sync
+                
+                // Enable wakeup on the exact same button (Active Low)
+                rtc_gpio_pullup_en((gpio_num_t)GPIO_BUTTON_INPUT);
+                rtc_gpio_pulldown_dis((gpio_num_t)GPIO_BUTTON_INPUT);
+                esp_sleep_enable_ext0_wakeup((gpio_num_t)GPIO_BUTTON_INPUT, 0);
+                
+                // Shutdown device
+                esp_deep_sleep_start();
+            } 
+            else if (time_since_last_tap > 400 && tap_count == 1) {
+                // Timeout expired, no second tap came. We already executed Single Tap instantly!
+                tap_count = 0;
+            }
+        }
+
         last_btn_state = current_btn_state;
         vTaskDelay(pdMS_TO_TICKS(20));
     }
@@ -140,6 +217,7 @@ void relay_service_handle(const uint8_t *payload, uint16_t len,
             return;
     }
     send_ack(packet_id, session_id, dest_id);
+    notify_ble_sync();
 }
 
 bool relay_service_get_state(void) { return s_state; }

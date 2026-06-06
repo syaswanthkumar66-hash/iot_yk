@@ -364,15 +364,14 @@ export default function Dashboard() {
                 <Cpu size={18} />
                 Device Overview
               </div>
-            </div>
-            <div className="table-wrap">
-              <table>
+                <table>
                 <thead>
                   <tr>
                     <th>Device</th>
                     <th>Type</th>
                     <th>Status</th>
                     <th>Signal Strength</th>
+                    <th>Latency</th>
                     <th>Firmware</th>
                   </tr>
                 </thead>
@@ -420,6 +419,21 @@ export default function Dashboard() {
                         }}
                       >
                         {d.is_online && d.rssi ? `${d.rssi} dBm` : '—'}
+                      </td>
+                      <td
+                        style={{
+                          fontFamily: 'var(--font-mono)',
+                          color:
+                            !d.is_online
+                              ? 'var(--text-muted)'
+                              : d.rtt_ms > 200
+                              ? 'var(--danger)'
+                              : d.rtt_ms > 100
+                              ? 'var(--warning)'
+                              : 'var(--success)'
+                        }}
+                      >
+                        {d.is_online && d.rtt_ms !== undefined && d.rtt_ms !== null ? `${d.rtt_ms} ms` : '—'}
                       </td>
                       <td style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--text-muted)' }}>
                         {d.firmware_ver || 'v1.0.0'}
