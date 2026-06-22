@@ -138,7 +138,7 @@ class YkpBleManager(
         
         // Spec v3: Signed payload formatting -> <JSON>|<HMAC>
         val hmac = BleSecurityHelper.computeHmac(payloadJson, hmacKey)
-        val completeFrame = "$payloadJson|$hmac"
+        val completeFrame = "$payloadJson|$hmac\n"
         
         rx.value = completeFrame.toByteArray(StandardCharsets.UTF_8)
         rx.writeType = BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
