@@ -59,10 +59,17 @@ void ota_service_handle(const uint8_t *payload, uint16_t len, uint8_t action_id)
                 memcpy(s_state.version, tlv.value, tlv.length < 15 ? tlv.length : 15);
             if (ykp_tlv_find(payload, len, TLV_VALUE_INT, &tlv))
                 ykp_tlv_read_uint32(&tlv, &s_state.firmware_size);
-            if (ykp_tlv_find(payload, len, TLV_HASH, &tlv))
+            /* M4 fix: reject if hash field is not exactly 32 bytes */
+            if (ykp_tlv_find(payload, len, TLV_HASH, &tlv)) {
+                if (tlv.length != 32) {
+                    ESP_LOGE(TAG, "OTA FAIL: TLV_HASH length=%u, expected 32", tlv.length);
+                    send_ota_pkt(OTA_FAIL);
+                    return;
+                }
                 memcpy(s_state.sha256, tlv.value, 32);
+            }
             if (ykp_tlv_find(payload, len, TLV_SIGNATURE, &tlv))
-                memcpy(s_state.ecdsa_sig, tlv.value, 64);
+                memcpy(s_state.ecdsa_sig, tlv.value, tlv.length < 64 ? tlv.length : 64);
 
             s_state.chunk_size   = 4096;
             s_state.chunks_total = (s_state.firmware_size + 4095) / 4096;
@@ -112,7 +119,9 @@ void ota_service_handle(const uint8_t *payload, uint16_t len, uint8_t action_id)
                 ykp_tlv_builder_t b;
                 ykp_tlv_builder_init(&b, tlv_buf, sizeof(tlv_buf));
                 ykp_tlv_add_uint16(&b, TLV_CHUNK_INDEX, s_state.next_expected_chunk);
+                /* C4 fix: check alloc before dereferencing pointer */
                 ykp_packet_t *pkt = ykp_packet_alloc();
+                if (!pkt) { ESP_LOGE(TAG, "OTA MISSING: packet alloc failed"); return; }
                 ykp_packet_set_header(pkt, 0, 0, s_device_id, "SERVER",
                                       ROUTE_CLOUD, SVC_OTA, OTA_MISSING,
                                       YKP_QOS_1, false);

@@ -213,7 +213,9 @@ static void udp_server_task(void *pvParameters) {
     }
 }
 
+#include "health_service.h"
+
 void legacy_udp_start(void) {
     load_or_derive_keys();
-    xTaskCreate(udp_server_task, "legacy_udp", 4096, NULL, 5, NULL);
+    xTaskCreatePinnedToCore(udp_server_task, "legacy_udp", 4096, NULL, 4, NULL, 1);
 }

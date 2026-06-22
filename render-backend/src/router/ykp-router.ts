@@ -7,12 +7,13 @@ import { registerConnection, removeConnection } from './route-engine'
 import { presenceEngine } from '../presence/presence-engine'
 import { handleHealthReport } from '../services/health.service'
 import { handleRelayAck } from '../services/relay.service'
+import { handleSensorReport } from '../services/sensor.service'
 import { generateEphemeralKeyPair, generateNonce,
          generateSessionId, deriveSessionKey } from '../security/ecdh'
 import { logAudit, upsertDevice } from '../db/supabase'
 import {
   ServiceId, SecAction, RelayAction, HealthAction,
-  SensorAction, OtaAction, RouteType, QoS, TlvType, FLAGS
+  SensorAction, OtaAction, RouteType, QoS, TlvType, FLAGS, YKP_HEADER_SIZE
 } from '../packet/constants'
 import { decrypt } from '../security/aes-gcm'
 
@@ -136,10 +137,11 @@ export function startYkpRouter(wss: WebSocketServer): void {
         // ── Decrypt Payload if ENCRYPTED ─────────────────
         if ((pkt.header.flags & FLAGS.ENCRYPTED) !== 0) {
           try {
-            const aad = data.subarray(0, 33)
+            const aad = data.subarray(0, YKP_HEADER_SIZE)
             const plaintext = decrypt(
               session.sessionKey,
-              pkt.header.sessionId,
+              /* S2 fix: pass session.sessionId as key_ver — matches firmware's first key_ver */
+              session.sessionId,
               pkt.header.packetId,
               aad,
               pkt.payload,
@@ -155,19 +157,20 @@ export function startYkpRouter(wss: WebSocketServer): void {
         // ── Auto ACK for QoS 1 packets ──────────────────
         const qos = pkt.header.flags & FLAGS.QOS_MASK
         if (qos === QoS.QOS_1) {
+          /* S4 fix: use session packetCounter for server outbound packets */
+          const ackPktId = ++session.packetCounter
           const ackPkt = buildPacket({
-            packetId: pkt.header.packetId,
-            sessionId: pkt.header.sessionId,
-            sourceId: 'SERVER',
-            destId: deviceId,
+            packetId:  ackPktId,
+            sessionId: session.sessionId,
+            sourceId:  'SERVER',
+            destId:    deviceId,
             routeType: RouteType.DIRECT,
             serviceId: serviceId,
-            actionId: actionId,
-            qos: QoS.QOS_0, // ACKs are QoS 0
-            ack: true,
+            actionId:  actionId,
+            qos:       QoS.QOS_0,
+            ack:       true,
           })
           ws.send(ackPkt)
-          console.log(`[router] Sent QoS1 ACK for packet ID: ${pkt.header.packetId} from ${deviceId}`)
         }
 
         // ── Dispatch to services ──────────────────────
@@ -183,8 +186,7 @@ export function startYkpRouter(wss: WebSocketServer): void {
             break
 
           case ServiceId.SENSOR:
-            console.log(`[sensor] report from ${deviceId}`)
-            await logAudit(deviceId, 'SENSOR_REPORT', { len: pkt.payload.length })
+            await handleSensorReport(pkt)
             break
 
           case ServiceId.OTA:
@@ -217,12 +219,10 @@ export function startYkpRouter(wss: WebSocketServer): void {
       console.error(`[ws] error for ${deviceId}:`, err.message)
     })
 
-    // Send initial connection message
-    ws.send(JSON.stringify({
-      type: 'CONNECTED',
-      server: 'YKP Router v5',
-      timestamp: Math.floor(Date.now() / 1000),
-    }))
+    // S3 fix: Do NOT send a JSON text greeting.
+    // The ESP32 WS parser only accepts binary YKP packets —
+    // a UTF-8 JSON string will fail the magic byte check and log errors.
+    // Connection is confirmed when the device sends its first HELLO packet.
   })
 
   console.log('[ykp-router] WebSocket router started')

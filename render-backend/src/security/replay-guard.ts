@@ -7,6 +7,9 @@ export class ReplayGuard {
 
   /** Returns true if packet is valid (not a replay). Registers the ID. */
   check(packetId: number): boolean {
+    /* S5 fix: pkt_id=0 is reserved — firmware never emits it, reject it here too */
+    if (packetId === 0) return false
+
     if (!this.initialised) {
       this.highestId   = packetId
       this.windowBits  = BigInt(1)

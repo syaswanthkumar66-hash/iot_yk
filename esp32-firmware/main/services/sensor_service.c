@@ -22,11 +22,13 @@ void sensor_service_init(sensor_send_fn_t send_fn)
     s_send = send_fn;
     nvs_config_get_device_id(s_device_id, sizeof(s_device_id));
 
-    /* Configure PIR GPIO as input */
+    /* H2 fix: PIR sensor is push-pull — no pull resistors needed.
+       Original code set pull_up_en = GPIO_PULLDOWN_ENABLE which is a wrong field/value. */
     gpio_config_t pir_cfg = {
         .pin_bit_mask = (1ULL << GPIO_PIR_MOTION),
         .mode         = GPIO_MODE_INPUT,
-        .pull_up_en   = GPIO_PULLDOWN_ENABLE,
+        .pull_up_en   = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
         .intr_type    = GPIO_INTR_DISABLE,
     };
     gpio_config(&pir_cfg);
@@ -81,16 +83,6 @@ void sensor_service_send_report(void)
              r.temperature, r.humidity, r.motion);
 }
 
-static void sensor_task(void *arg)
-{
-    vTaskDelay(pdMS_TO_TICKS(3000));
-    while (1) {
-        sensor_service_send_report();
-        vTaskDelay(pdMS_TO_TICKS(60000));
-    }
-}
-
-void sensor_service_start_task(void)
-{
-    xTaskCreate(sensor_task, "sensor", TASK_STACK_SENSOR, NULL, TASK_PRIO_SENSOR, NULL);
-}
+/* H5 fix: sensor_task and sensor_service_start_task removed.
+   Server requests sensor reports on-demand via SVC_SENSOR packets.
+   A periodic background task wastes 4KB stack and sends unrequested data. */

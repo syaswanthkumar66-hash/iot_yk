@@ -1,5 +1,5 @@
 import { YkpPacket } from '../packet/parser'
-import { findTlv, tlvReadFloat, tlvReadUInt32, tlvReadInt8 } from '../packet/parser'
+import { parseTlv, tlvReadFloat, tlvReadUInt32, tlvReadInt8, tlvReadString } from '../packet/parser'
 import { insertHealthRecord, logAudit, upsertDeviceState } from '../db/supabase'
 import { TlvType } from '../packet/constants'
 
@@ -10,7 +10,6 @@ export interface HealthReportData {
   min_heap?:      number
   rssi?:          number
   temperature?:   number
-  battery?:       number
   packet_loss?:   number
   rtt_ms?:        number
   uptime_sec?:    number
@@ -22,24 +21,18 @@ export async function handleHealthReport(pkt: YkpPacket): Promise<void> {
   const buf      = pkt.payload
   const deviceId = pkt.header.sourceId
 
-  // Extract TLV fields
-  const cpuTlv   = findTlv(buf, TlvType.VALUE_FLOAT)
-  const rssiTlv  = findTlv(buf, TlvType.RSSI)
-
-  const cpu       = cpuTlv  ? buf.readFloatBE(cpuTlv.value.byteOffset  + 0) : 0
-  const rssi      = rssiTlv ? buf.readInt8(rssiTlv.value.byteOffset)         : 0
-
-  // Parse all floats sequentially from raw buffer for simplicity
-  const health = parseHealthPayload(buf, deviceId) as unknown as HealthReportData
+  /* S1 fix: use CBOR parser (parseTlv) — firmware sends CBOR indefinite maps.
+     The old code read raw TLV bytes which broke on every packet. */
+  const health = parseCborHealthPayload(buf, deviceId)
 
   try {
     await insertHealthRecord(deviceId, health as unknown as Record<string, unknown>)
     await upsertDeviceState(deviceId, {
       sensor_data: {
-        rssi: health.rssi,
-        free_heap: health.free_heap,
+        rssi:       health.rssi,
+        free_heap:  health.free_heap,
         uptime_sec: health.uptime_sec,
-        rtt_ms: health.rtt_ms
+        rtt_ms:     health.rtt_ms,
       }
     })
     console.log(`[health] ${deviceId}: heap=${health.free_heap}, rssi=${health.rssi}, rtt=${health.rtt_ms}ms`)
@@ -47,7 +40,6 @@ export async function handleHealthReport(pkt: YkpPacket): Promise<void> {
     console.error('[health] DB insert error:', err)
   }
 
-  // Check alert thresholds
   if (health.free_heap !== undefined && health.free_heap < 50000) {
     console.warn(`[health] ALERT: ${deviceId} low heap ${health.free_heap} bytes`)
     await logAudit(deviceId, 'HEAP_LOW_ALERT', health as unknown as Record<string, unknown>)
@@ -57,32 +49,44 @@ export async function handleHealthReport(pkt: YkpPacket): Promise<void> {
   }
 }
 
-function parseHealthPayload(buf: Buffer, deviceId: string): Record<string, unknown> {
-  // Simplified linear TLV parse for health payload
-  let i = 0
-  let floatIdx  = 0
-  let intIdx    = 0
-  const floatKeys = ['cpu_usage', 'temperature', 'battery', 'packet_loss', 'rtt_ms']
-  const intKeys   = ['free_heap', 'min_heap', 'restart_count']
-  const result: Record<string, unknown> = { device_id: deviceId }
+/**
+ * S1 fix: Parse health payload as CBOR indefinite map.
+ * Firmware health_service.c encodes:
+ *   KEY_FLOAT(cpu_usage) KEY_INT(free_heap) KEY_INT(min_heap)
+ *   KEY_RSSI(rssi) KEY_FLOAT(temperature) KEY_FLOAT(packet_loss)
+ *   KEY_FLOAT(rtt_ms) KEY_TIMESTAMP(uptime_sec) KEY_INT(restart_count)
+ *   KEY_STR(device_id) KEY_STR(firmware_ver)
+ */
+function parseCborHealthPayload(buf: Buffer, deviceId: string): HealthReportData {
+  const entries = parseTlv(buf)
+  const result: HealthReportData = { device_id: deviceId, recorded_at: new Date().toISOString() }
 
-  while (i + 3 <= buf.length) {
-    const type   = buf[i]
-    const length = buf.readUInt16BE(i + 1)
-    const valBuf = buf.subarray(i + 3, i + 3 + length)
+  /* Track float and int field order — firmware uses same key type for sequential fields */
+  let floatIdx = 0
+  let intIdx   = 0
+  const floatKeys: (keyof HealthReportData)[] = ['cpu_usage', 'temperature', 'packet_loss', 'rtt_ms']
+  const intKeys:   (keyof HealthReportData)[] = ['free_heap', 'min_heap', 'restart_count']
 
-    if (type === 0x05 && length === 4 && floatIdx < floatKeys.length) {
-      result[floatKeys[floatIdx++]] = parseFloat(valBuf.readFloatBE(0).toFixed(2))
-    } else if (type === 0x04 && length === 4 && intIdx < intKeys.length) {
-      result[intKeys[intIdx++]] = valBuf.readUInt32BE(0)
-    } else if (type === 0x12 && length >= 1) {
-      result['rssi'] = valBuf.readInt8(0)
-    } else if (type === 0x02 && length === 8) {
-      result['uptime_sec'] = Number(valBuf.readBigUInt64BE(0))
+  for (const e of entries) {
+    switch (e.type as TlvType) {
+      case TlvType.VALUE_FLOAT:
+        if (floatIdx < floatKeys.length)
+          (result as any)[floatKeys[floatIdx++]] = tlvReadFloat(e)
+        break
+      case TlvType.VALUE_INT:
+        if (intIdx < intKeys.length)
+          (result as any)[intKeys[intIdx++]] = tlvReadUInt32(e)
+        break
+      case TlvType.RSSI:
+        result.rssi = tlvReadInt8(e)
+        break
+      case TlvType.TIMESTAMP:
+        result.uptime_sec = tlvReadUInt32(e)
+        break
+      case TlvType.DEVICE_ID:
+        result.device_id = tlvReadString(e)
+        break
     }
-    i += 3 + length
   }
-
-  result['recorded_at'] = new Date().toISOString()
   return result
 }

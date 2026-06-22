@@ -176,7 +176,7 @@ typedef enum {
 } ykp_error_t;
 
 /* ── Timing constants ────────────────────── */
-#define YKP_HEALTH_REPORT_INTERVAL_MS    30000   /* 30 seconds */
+#define YKP_HEALTH_REPORT_INTERVAL_MS    60000   /* 60 seconds */
 #define YKP_SESSION_TIMEOUT_MS           3600000 /* 1 hour */
 #define YKP_KEY_ROTATE_PACKET_COUNT      1000
 #define YKP_KEY_ROTATE_INTERVAL_MS       1800000 /* 30 minutes */

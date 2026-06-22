@@ -2,6 +2,7 @@ import 'dotenv/config'
 import express from 'express'
 import cors from 'cors'
 import helmet from 'helmet'
+import rateLimit from 'express-rate-limit'
 import http from 'http'
 import { WebSocketServer } from 'ws'
 import path from 'path'
@@ -22,8 +23,24 @@ app.use(helmet({
   crossOriginResourcePolicy: { policy: "cross-origin" },
   crossOriginEmbedderPolicy: false
 }))
-app.use(cors({ origin: '*' }))
+
+/* S6 fix: restrict CORS to known frontend origin(s) only.
+   Set FRONTEND_ORIGIN env var to your deployed frontend URL.
+   Falls back to localhost:3000 for development. */
+const ALLOWED_ORIGINS = (process.env.FRONTEND_ORIGIN ?? 'http://localhost:3000').split(',')
+app.use(cors({
+  origin: (origin, cb) => {
+    // Allow no-origin (curl/Postman/same-host) or known origins
+    if (!origin || ALLOWED_ORIGINS.includes(origin)) return cb(null, true)
+    cb(new Error(`CORS blocked: ${origin}`))
+  },
+  credentials: true,
+}))
 app.use(express.json({ limit: '10mb' }))
+
+/* S6 fix: rate limit sensitive REST endpoints */
+const authLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 30, standardHeaders: true, legacyHeaders: false })
+const otaLimiter  = rateLimit({ windowMs: 60 * 60 * 1000, max: 10, standardHeaders: true, legacyHeaders: false })
 
 // ── Health check (Render uptime monitor) ──
 app.get('/health', (_req, res) => {
@@ -63,8 +80,8 @@ app.get('/api/cert', (_req, res) => {
 // ── REST API routes ────────────────────────
 app.use('/api/devices', devicesApi)
 app.use('/api/health',  healthApi)
-app.use('/api/ota',     otaApi)
-app.use('/api/auth',    authApi)
+app.use('/api/auth',    authLimiter, authApi)   /* S6: rate limited */
+app.use('/api/ota',     otaLimiter,  otaApi)    /* S6: rate limited */
 app.use('/api/stream',  streamApi)
 
 // (No SPA fallback required — frontend runs independently)

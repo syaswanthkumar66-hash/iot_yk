@@ -151,8 +151,6 @@ bool wifi_manager_scan_for_ssid(const char *target_ssid)
         .channel = 0,
         .show_hidden = false,
         .scan_type = WIFI_SCAN_TYPE_ACTIVE,
-        .scan_time.active.min = 100,
-        .scan_time.active.max = 300,
     };
     
     esp_err_t err = esp_wifi_scan_start(&scan_config, true);

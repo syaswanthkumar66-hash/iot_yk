@@ -217,23 +217,55 @@ export default function Devices() {
                 </div>
               </div>
 
-              {d.is_online && d.device_type === 'switch' && (
+              {d.is_online && (
                 <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
-                  <button
-                    onClick={() => toggle(d.device_id, d.relay_state)}
-                    className={`btn btn-sm ${d.relay_state ? 'btn-danger' : 'btn-success'}`}
-                    style={{ flex: 1 }}
-                  >
-                    {d.relay_state ? (
-                      <>
-                        <ToggleRight size={14} /> Turn OFF
-                      </>
-                    ) : (
-                      <>
-                        <ToggleLeft size={14} /> Turn ON
-                      </>
-                    )}
-                  </button>
+                  {d.device_type === 'switch' ? (
+                    <button
+                      onClick={() => toggle(d.device_id, d.relay_state)}
+                      className={`btn btn-sm ${d.relay_state ? 'btn-danger' : 'btn-success'}`}
+                      style={{ flex: 1 }}
+                    >
+                      {d.relay_state ? (
+                        <>
+                          <ToggleRight size={14} /> Turn OFF
+                        </>
+                      ) : (
+                        <>
+                          <ToggleLeft size={14} /> Turn ON
+                        </>
+                      )}
+                    </button>
+                  ) : d.device_type === 'sensor' ? (
+                    <button
+                      onClick={async () => {
+                        try {
+                          await sendCommand(d.device_id, 2, 1) // SVC_SENSOR = 2, SENSOR_REPORT = 1
+                          alert(`Request sent to sensor ${d.device_id}. Data will update via stream.`)
+                        } catch (err) {
+                          alert(`Failed: ${err.message}`)
+                        }
+                      }}
+                      className="btn btn-sm btn-primary"
+                      style={{ flex: 1, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}
+                    >
+                      <RefreshCw size={14} /> Read Sensor
+                    </button>
+                  ) : (
+                    <button
+                      onClick={async () => {
+                        try {
+                          await sendCommand(d.device_id, 4, 2) // SVC_HEALTH = 4, HEALTH_REQUEST = 2
+                          alert(`Request sent to device ${d.device_id}. Health data will update via stream.`)
+                        } catch (err) {
+                          alert(`Failed: ${err.message}`)
+                        }
+                      }}
+                      className="btn btn-sm btn-secondary"
+                      style={{ flex: 1, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}
+                    >
+                      <RefreshCw size={14} /> Fetch Health
+                    </button>
+                  )}
                   {d.rtt_ms !== undefined && d.rtt_ms !== null && (
                     <span
                       style={{

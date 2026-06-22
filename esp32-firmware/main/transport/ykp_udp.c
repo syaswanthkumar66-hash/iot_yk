@@ -84,10 +84,12 @@ static void udp_rx_task(void *arg)
     vTaskDelete(NULL);
 }
 
+#include "health_service.h"
+
 void ykp_udp_start_rx_task(void)
 {
     s_rx_running = true;
-    xTaskCreate(udp_rx_task, "udp_rx", TASK_STACK_UDP, NULL, TASK_PRIO_UDP, NULL);
+    xTaskCreatePinnedToCore(udp_rx_task, "udp_rx", TASK_STACK_UDP, NULL, TASK_PRIO_UDP, NULL, 1);
 }
 
 void ykp_udp_stop(void)

@@ -82,8 +82,9 @@ static void discovery_task(void *arg)
     }
 }
 
+#include "health_service.h"
+
 void ykp_discovery_start_task(void)
 {
-    xTaskCreate(discovery_task, "discovery", TASK_STACK_DISCOVERY,
-                NULL, TASK_PRIO_DISCOVERY, NULL);
+    xTaskCreatePinnedToCore(discovery_task, "discovery", TASK_STACK_DISCOVERY, NULL, TASK_PRIO_DISCOVERY, NULL, 1);
 }

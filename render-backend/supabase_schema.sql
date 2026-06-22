@@ -187,6 +187,22 @@ create policy "auth_read_groups" on device_groups
 create policy "auth_read_rules" on automation_rules
     for select to authenticated using (true);
 
+-- Authenticated users can write/manage groups, rules, states, and devices
+create policy "auth_all_groups" on device_groups
+    for all to authenticated using (true);
+
+create policy "auth_all_rules" on automation_rules
+    for all to authenticated using (true);
+
+create policy "auth_all_devices" on devices
+    for all to authenticated using (true);
+
+create policy "auth_all_state" on device_state
+    for all to authenticated using (true);
+
+create policy "auth_all_ota" on ota_jobs
+    for all to authenticated using (true);
+
 -- ── Realtime ────────────────────────────────────────────────────
 -- Enable realtime for dashboard live updates
 alter publication supabase_realtime add table devices;

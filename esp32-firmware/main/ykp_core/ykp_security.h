@@ -23,6 +23,7 @@
 typedef struct {
     uint8_t  session_key[YKP_AES_KEY_LEN];   /* AES-256 key */
     uint32_t session_id;
+    uint32_t key_ver;                        /* Key rotation version */
     bool     active;
 } ykp_session_keys_t;
 

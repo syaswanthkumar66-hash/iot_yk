@@ -81,6 +81,12 @@ ykp_packet_t *ykp_packet_alloc(void);
 void ykp_packet_free(ykp_packet_t *pkt);
 
 /**
+ * @brief F1 fix: Release only the payload of a stack-allocated packet.
+ *        Safe for both heap-allocated (TX) and static-buf (RX) payloads.
+ */
+void ykp_packet_free_payload(ykp_packet_t *pkt);
+
+/**
  * @brief Set the fixed header fields.
  */
 void ykp_packet_set_header(ykp_packet_t      *pkt,
@@ -136,7 +142,8 @@ bool     ykp_tlv_add_uint64(ykp_tlv_builder_t *b, uint8_t type, uint64_t val);
 bool     ykp_tlv_add_bytes(ykp_tlv_builder_t *b, uint8_t type,
                             const uint8_t *data, uint16_t len);
 bool     ykp_tlv_add_string(ykp_tlv_builder_t *b, uint8_t type, const char *str);
-uint16_t ykp_tlv_builder_len(const ykp_tlv_builder_t *b);
+/* C2 fix: NOT const — function writes 0xFF break byte into the buffer */
+uint16_t ykp_tlv_builder_len(ykp_tlv_builder_t *b);
 
 /* ════════════════════════════════════════════
    TLV Parser API

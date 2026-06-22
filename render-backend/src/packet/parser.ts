@@ -58,42 +58,132 @@ export function parsePacket(raw: Buffer): YkpPacket | null {
   return { header, payload, authTag, raw }
 }
 
-/** Parse all TLV entries from a buffer */
+/** Parse CBOR map payload */
 export function parseTlv(buf: Buffer): TlvEntry[] {
   const entries: TlvEntry[] = []
+  if (buf.length < 2) return entries
+
   let i = 0
-  while (i + 3 <= buf.length) {
-    const type   = buf[i]
-    const length = buf.readUInt16BE(i + 1)
-    if (i + 3 + length > buf.length) break
-    entries.push({ type, length, value: buf.subarray(i + 3, i + 3 + length) })
-    i += 3 + length
+  const header = buf[i++]
+  const indefinite = (header === 0xBF)
+
+  while (i < buf.length) {
+    if (indefinite && buf[i] === 0xFF) {
+      break
+    }
+
+    let key = 0
+    const keyHdr = buf[i++]
+    if (keyHdr < 24) {
+      key = keyHdr
+    } else if (keyHdr === 0x18) {
+      key = buf[i++]
+    } else {
+      break
+    }
+
+    const valStart = i
+    const valHdr = buf[i]
+    i++
+
+    const major = valHdr & 0xE0
+    const info = valHdr & 0x1F
+
+    if (major === 0x00 || major === 0x20) {
+      if (info < 24) {}
+      else if (info === 0x18) i += 1
+      else if (info === 0x19) i += 2
+      else if (info === 0x1A) i += 4
+      else if (info === 0x1B) i += 8
+    } else if (major === 0x40 || major === 0x60) {
+      let strLen = 0
+      if (info < 24) strLen = info
+      else if (info === 0x18) strLen = buf[i++]
+      else if (info === 0x19) { strLen = buf.readUInt16BE(i); i += 2 }
+      i += strLen
+    } else if (major === 0xE0) {
+      if (info === 25) i += 2
+      else if (info === 26) i += 4
+      else if (info === 27) i += 8
+    }
+
+    const value = buf.subarray(valStart, i)
+    entries.push({ type: key, length: value.length, value })
   }
+
   return entries
 }
 
-/** Find a specific TLV type */
-export function findTlv(buf: Buffer, type: TlvType): TlvEntry | null {
+export function findTlv(buf: Buffer, type: number): TlvEntry | null {
   const entries = parseTlv(buf)
   return entries.find(e => e.type === type) ?? null
 }
 
 export function tlvReadString(entry: TlvEntry): string {
-  return entry.value.toString('utf8')
+  const buf = entry.value
+  const valHdr = buf[0]
+  const info = valHdr & 0x1F
+  let i = 1
+  let strLen = 0
+  if (info < 24) strLen = info
+  else if (info === 0x18) strLen = buf[i++]
+  else if (info === 0x19) { strLen = buf.readUInt16BE(i); i += 2 }
+  return buf.subarray(i, i + strLen).toString('utf8')
 }
 
 export function tlvReadUInt32(entry: TlvEntry): number {
-  return entry.value.readUInt32BE(0)
+  const buf = entry.value
+  const valHdr = buf[0]
+  const info = valHdr & 0x1F
+  if (info < 24) return info
+  if (info === 0x18) return buf[1]
+  if (info === 0x19) return buf.readUInt16BE(1)
+  if (info === 0x1A) return buf.readUInt32BE(1)
+  return 0
 }
 
 export function tlvReadUInt16(entry: TlvEntry): number {
-  return entry.value.readUInt16BE(0)
-}
-
-export function tlvReadFloat(entry: TlvEntry): number {
-  return entry.value.readFloatBE(0)
+  return tlvReadUInt32(entry)
 }
 
 export function tlvReadInt8(entry: TlvEntry): number {
-  return entry.value.readInt8(0)
+  const buf = entry.value
+  const valHdr = buf[0]
+  const major = valHdr & 0xE0
+  const info = valHdr & 0x1F
+  if (major === 0x00) {
+    return tlvReadUInt32(entry)
+  } else if (major === 0x20) {
+    let uv = 0
+    if (info < 24) uv = info
+    else if (info === 0x18) uv = buf[1]
+    else if (info === 0x19) uv = buf.readUInt16BE(1)
+    else if (info === 0x1A) uv = buf.readUInt32BE(1)
+    return -1 - uv
+  }
+  return 0
+}
+
+function decodeFloat16(binary: number): number {
+  const exponent = (binary & 0x7c00) >> 10;
+  const fraction = binary & 0x03ff;
+  const sign = (binary & 0x8000) ? -1 : 1;
+  if (exponent === 0) {
+    return sign * Math.pow(2, -14) * (fraction / 1024);
+  } else if (exponent === 0x1f) {
+    return fraction ? NaN : sign * Math.pow(2, -15);
+  }
+  return sign * Math.pow(2, exponent - 15) * (1 + fraction / 1024);
+}
+
+export function tlvReadFloat(entry: TlvEntry): number {
+  const buf = entry.value
+  const hdr = buf[0]
+  if (hdr === 0xF9) {
+    const f16 = buf.readUInt16BE(1)
+    return parseFloat(decodeFloat16(f16).toFixed(2))
+  } else if (hdr === 0xFA) {
+    return parseFloat(buf.readFloatBE(1).toFixed(2))
+  }
+  return 0
 }

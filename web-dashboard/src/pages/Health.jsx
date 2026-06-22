@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, LineChart, Line, BarChart, Bar } from 'recharts'
 import { Activity, Cpu, Wifi, AlertTriangle, RefreshCw } from 'lucide-react'
 import { supabase } from '../lib/supabase'
-import { fetchDevices, fetchHealth, fetchHealthHistory } from '../lib/api'
+import { fetchDevices, fetchHealth, fetchHealthHistory, sendCommand } from '../lib/api'
 
 const TOOLTIP_STYLE = {
   contentStyle: { background: 'var(--bg-surface)', border: '1px solid var(--border)', borderRadius: 8 },
@@ -38,10 +38,20 @@ export default function Health() {
   }, [])
 
   // 2. Fetch specific device health when selected device changes
-  const loadDeviceHealth = async () => {
+  const loadDeviceHealth = async (forceQuery = false) => {
     if (!selected) return
     try {
       setTelemetryLoading(true)
+      
+      if (forceQuery) {
+        try {
+          await sendCommand(selected, 4, 2) // SVC_HEALTH = 4, HEALTH_REQUEST = 2
+          await new Promise(r => setTimeout(r, 800))
+        } catch (err) {
+          console.warn('Direct query failed:', err.message)
+        }
+      }
+      
       // Get latest snapshot from database via API
       try {
         const snapData = await fetchHealth(selected)
@@ -127,8 +137,8 @@ export default function Health() {
             </button>
           ))
         )}
-        <button onClick={loadDeviceHealth} className="btn btn-secondary btn-sm" style={{ marginLeft: 'auto' }}>
-          <RefreshCw className={telemetryLoading ? 'spin' : ''} size={14} />Refresh
+        <button onClick={() => loadDeviceHealth(true)} className="btn btn-secondary btn-sm" style={{ marginLeft: 'auto' }}>
+          <RefreshCw className={telemetryLoading ? 'spin' : ''} size={14} />Refresh (Query Device)
         </button>
       </div>
 

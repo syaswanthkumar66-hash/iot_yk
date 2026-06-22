@@ -27,6 +27,7 @@ typedef struct {
 typedef struct {
     ykp_pending_t  slots[QOS_MAX_PENDING];
     ykp_send_fn_t  send_fn;
+    void          *timer;         /* FreeRTOS TimerHandle_t pointer */
 } ykp_qos_engine_t;
 
 void ykp_qos_init(ykp_qos_engine_t *engine, ykp_send_fn_t send_fn);

@@ -1,0 +1,6 @@
+{
+  "name": "YKP Smart Control",
+  "description": "Smart home control application for YKP devices with web integration, Wi-Fi SoftAP provisioning, and real-time telemetry analytics.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

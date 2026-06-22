@@ -1,6 +1,6 @@
 import { WebSocket } from 'ws'
 import { buildPacket, BuildPacketOptions } from '../packet/builder'
-import { RouteType, ServiceId, QoS, FLAGS, YKP_AUTH_TAG_SIZE } from '../packet/constants'
+import { RouteType, ServiceId, QoS, FLAGS, YKP_AUTH_TAG_SIZE, YKP_HEADER_SIZE } from '../packet/constants'
 import { sessionManager } from './session-manager'
 import { encrypt } from '../security/aes-gcm'
 
@@ -51,29 +51,34 @@ export function sendToDevice(deviceId: string, buf: Buffer): boolean {
 
 export function sendYkpPacket(deviceId: string, opts: BuildPacketOptions): boolean {
   const session = sessionManager.getSession(deviceId)
-  
+
   if (session && session.sessionKey && opts.payload && opts.payload.length > 0) {
     opts.encrypted = true
     opts.sessionId = session.sessionId
-    
-    // Generate AAD (33 byte header)
+    /* S4 fix: always use monotonically increasing packetCounter for server outbound */
+    opts.packetId  = ++session.packetCounter
+
+    /* S7 fix: use YKP_HEADER_SIZE constant, not magic number 33 */
     const emptyPkt = buildPacket({ ...opts, payload: Buffer.alloc(0), authTag: Buffer.alloc(YKP_AUTH_TAG_SIZE) })
-    const aad = emptyPkt.subarray(0, 33)
-    
+    const aad = emptyPkt.subarray(0, YKP_HEADER_SIZE)
+
     const { ciphertext, authTag } = encrypt(
       session.sessionKey,
-      opts.sessionId,
+      /* S2 fix: pass sessionId as key_ver to match firmware IV spec */
+      session.sessionId,
       opts.packetId,
       aad,
       opts.payload
     )
-    
+
     opts.payload = ciphertext
     opts.authTag = authTag
   } else if (session) {
     opts.sessionId = session.sessionId
+    /* S4 fix: increment counter even for unencrypted server packets */
+    opts.packetId  = ++session.packetCounter
   }
-  
+
   const rawBuf = buildPacket(opts)
   return sendToDevice(deviceId, rawBuf)
 }

@@ -17,6 +17,8 @@ esp32-firmware/build/
 esp32-firmware/sdkconfig
 esp32-firmware/sdkconfig.old
 esp32-firmware/sdkconfig.defaults.old
+esp32-firmware/managed_components/
+
 
 # Editors and IDEs
 .vscode/

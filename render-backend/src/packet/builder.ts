@@ -64,57 +64,140 @@ export function buildPacket(opts: BuildPacketOptions): Buffer {
   return buf
 }
 
-/** TLV builder — returns built buffer */
+function float32ToFloat16(val: number): number {
+  const buf = Buffer.alloc(4)
+  buf.writeFloatBE(val, 0)
+  const f = buf.readUInt32BE(0)
+  const sign = (f >> 16) & 0x8000
+  const exponent = ((f >> 23) & 0xFF) - 127
+  const mantissa = f & 0x007FFFFF
+
+  if (((f >> 23) & 0xFF) === 0) return sign
+  if (((f >> 23) & 0xFF) === 0xFF) return sign | 0x7C00 | (mantissa ? 0x0200 : 0)
+
+  const newExp = exponent + 15
+  if (newExp >= 31) return sign | 0x7C00
+  if (newExp <= 0) {
+    if (newExp < -10) return sign
+    const subMantissa = (mantissa | 0x00800000) >> (1 - newExp)
+    return sign | (subMantissa >> 13)
+  }
+  return sign | (newExp << 10) | (mantissa >> 13)
+}
+
+/** CBOR Indefinite Map Builder (equivalent to legacy TlvBuilder) */
 export class TlvBuilder {
   private chunks: Buffer[] = []
 
+  constructor() {
+    // CBOR Indefinite map start
+    this.chunks.push(Buffer.from([0xBF]))
+  }
+
+  private addKey(key: number) {
+    if (key < 24) {
+      this.chunks.push(Buffer.from([key]))
+    } else {
+      this.chunks.push(Buffer.from([0x18, key]))
+    }
+  }
+
   addUInt8(type: TlvType, val: number): this {
-    const b = Buffer.alloc(4)
-    b[0] = type; b.writeUInt16BE(1, 1); b[3] = val
-    this.chunks.push(b); return this
+    this.addKey(type)
+    if (val < 24) {
+      this.chunks.push(Buffer.from([val]))
+    } else {
+      this.chunks.push(Buffer.from([0x18, val]))
+    }
+    return this
   }
 
   addUInt16(type: TlvType, val: number): this {
-    const b = Buffer.alloc(5)
-    b[0] = type; b.writeUInt16BE(2, 1); b.writeUInt16BE(val, 3)
-    this.chunks.push(b); return this
+    this.addKey(type)
+    if (val < 24) {
+      this.chunks.push(Buffer.from([val]))
+    } else if (val <= 0xFF) {
+      this.chunks.push(Buffer.from([0x18, val]))
+    } else {
+      const b = Buffer.alloc(3)
+      b[0] = 0x19
+      b.writeUInt16BE(val, 1)
+      this.chunks.push(b)
+    }
+    return this
   }
 
   addUInt32(type: TlvType, val: number): this {
-    const b = Buffer.alloc(7)
-    b[0] = type; b.writeUInt16BE(4, 1); b.writeUInt32BE(val, 3)
-    this.chunks.push(b); return this
+    this.addKey(type)
+    if (val < 24) {
+      this.chunks.push(Buffer.from([val]))
+    } else if (val <= 0xFF) {
+      this.chunks.push(Buffer.from([0x18, val]))
+    } else if (val <= 0xFFFF) {
+      const b = Buffer.alloc(3)
+      b[0] = 0x19
+      b.writeUInt16BE(val, 1)
+      this.chunks.push(b)
+    } else {
+      const b = Buffer.alloc(5)
+      b[0] = 0x1A
+      b.writeUInt32BE(val, 1)
+      this.chunks.push(b)
+    }
+    return this
   }
 
   addFloat(type: TlvType, val: number): this {
-    const b = Buffer.alloc(7)
-    b[0] = type; b.writeUInt16BE(4, 1); b.writeFloatBE(val, 3)
-    this.chunks.push(b); return this
+    this.addKey(type)
+    const f16 = float32ToFloat16(val)
+    const b = Buffer.alloc(3)
+    b[0] = 0xF9
+    b.writeUInt16BE(f16, 1)
+    this.chunks.push(b)
+    return this
   }
 
   addString(type: TlvType, val: string): this {
-    const str = Buffer.from(val, 'utf8')
-    const b   = Buffer.alloc(3 + str.length)
-    b[0] = type; b.writeUInt16BE(str.length, 1)
-    str.copy(b, 3)
-    this.chunks.push(b); return this
+    this.addKey(type)
+    const strBuf = Buffer.from(val, 'utf8')
+    const len = strBuf.length
+    if (len < 24) {
+      this.chunks.push(Buffer.concat([Buffer.from([0x60 | len]), strBuf]))
+    } else {
+      const b = Buffer.alloc(2)
+      b[0] = 0x78
+      b[1] = len
+      this.chunks.push(Buffer.concat([b, strBuf]))
+    }
+    return this
   }
 
   addBytes(type: TlvType, val: Buffer): this {
-    const b = Buffer.alloc(3 + val.length)
-    b[0] = type; b.writeUInt16BE(val.length, 1)
-    val.copy(b, 3)
-    this.chunks.push(b); return this
+    this.addKey(type)
+    const len = val.length
+    if (len < 24) {
+      this.chunks.push(Buffer.concat([Buffer.from([0x40 | len]), val]))
+    } else {
+      const b = Buffer.alloc(2)
+      b[0] = 0x58
+      b[1] = len
+      this.chunks.push(Buffer.concat([b, val]))
+    }
+    return this
   }
 
   addBigInt(type: TlvType, val: bigint): this {
-    const b = Buffer.alloc(11)
-    b[0] = type; b.writeUInt16BE(8, 1)
-    b.writeBigUInt64BE(val, 3)
-    this.chunks.push(b); return this
+    this.addKey(type)
+    const b = Buffer.alloc(9)
+    b[0] = 0x1B
+    b.writeBigUInt64BE(val, 1)
+    this.chunks.push(b)
+    return this
   }
 
   build(): Buffer {
+    // CBOR Indefinite map end
+    this.chunks.push(Buffer.from([0xFF]))
     return Buffer.concat(this.chunks)
   }
 }

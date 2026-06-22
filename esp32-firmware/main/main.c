@@ -9,14 +9,13 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/event_groups.h"
+#include "freertos/timers.h"
 #include "esp_log.h"
 #include "esp_system.h"
 #include "esp_timer.h"
 #include "esp_mac.h"
-#include "mdns.h"
 #include "esp_netif_sntp.h"
 #include "esp_sntp.h"
-#include "transport/legacy_udp.h"
 #include "esp_netif.h"
 #include "esp_event.h"
 #include "esp_pm.h"
@@ -34,13 +33,14 @@
 #include "ykp_qos.h"
 #include "wifi_manager.h"
 #include "ykp_websocket.h"
-#include "ykp_udp.h"
 #include "relay_service.h"
 #include "sensor_service.h"
 #include "health_service.h"
 #include "ota_service.h"
-#include "ykp_discovery.h"
 #include "ble_provision.h"
+/* C3 fix: single definition of g_conn_mgr_task_handle here */
+#include "task_handles.h"
+TaskHandle_t g_conn_mgr_task_handle = NULL;
 
 static const char *TAG = "ykp_main";
 
@@ -52,6 +52,7 @@ static ykp_qos_engine_t    g_qos;
 static char                g_device_id[9]   = {0};
 static char                g_device_type[16] = {0};
 static char                g_server_url[128] = {0};
+static TimerHandle_t       g_qos_timer = NULL;
 
 /* ── TX send function (used by services) ─────── */
 static void ykp_send_packet(const uint8_t *data, uint16_t len)
@@ -63,10 +64,15 @@ static void ykp_send_packet(const uint8_t *data, uint16_t len)
     }
 }
 
+/* ── QoS timer callback ── */
+static void qos_timer_callback(TimerHandle_t xTimer)
+{
+    ykp_qos_tick(&g_qos);
+}
+
 /* ── Auth handshake ─────────────────────────── */
 static void send_hello(void)
 {
-    /* Generate new ephemeral key pair */
     if (!ykp_security_gen_ephemeral(&g_sec_ctx)) {
         ESP_LOGE(TAG, "ephemeral key gen failed");
         return;
@@ -128,6 +134,19 @@ static void send_ecdh_response(void)
     ESP_LOGI(TAG, "ECDH_RESPONSE sent");
 }
 
+static void dump_decrypted_packet(const ykp_packet_t *pkt)
+{
+    char src[9] = {0};
+    char dst[9] = {0};
+    memcpy(src, pkt->header.source_id, 8);
+    memcpy(dst, pkt->header.dest_id, 8);
+
+    printf("[YKP RX] Packet ID: %lu, Source: %s, Dest: %s, Service: %d, Action: %d, Payload Len: %d\n",
+           (unsigned long)pkt->header.packet_id, src, dst,
+           pkt->header.service_id, pkt->header.action_id, pkt->payload_len);
+    fflush(stdout);
+}
+
 /* ── Incoming packet dispatcher ─────────────── */
 static void handle_incoming_packet(const uint8_t *raw, uint16_t raw_len)
 {
@@ -136,19 +155,16 @@ static void handle_incoming_packet(const uint8_t *raw, uint16_t raw_len)
 
     uint32_t pkt_id = pkt.header.packet_id;
 
-    /* If it is an ACK packet, process it in the QoS engine and stop */
     if (pkt.header.flags & YKP_FLAG_ACK) {
         ykp_qos_ack(&g_qos, pkt_id);
         goto done;
     }
 
-    /* Security service — unencrypted during handshake */
     if (pkt.header.service_id == SVC_SECURITY) {
         switch ((ykp_sec_action_t)pkt.header.action_id) {
 
             case SEC_CHALLENGE: {
                 ESP_LOGI(TAG, "CHALLENGE received");
-                /* Extract nonce and server ephemeral public key */
                 ykp_tlv_t tlv;
                 if (pkt.payload && ykp_tlv_find(pkt.payload, pkt.payload_len,
                                                  TLV_NONCE, &tlv)) {
@@ -176,11 +192,7 @@ static void handle_incoming_packet(const uint8_t *raw, uint16_t raw_len)
                 ykp_session_set_active(&g_session, session_id);
                 g_sec_ctx.session.session_id = session_id;
                 ykp_replay_reset(&g_replay);
-                ESP_LOGI(TAG, "SESSION ACTIVE — starting services");
-                health_service_start_task();
-#ifdef CONFIG_YKP_DEVICE_TYPE_SENSOR
-                sensor_service_start_task();
-#endif
+                ESP_LOGI(TAG, "SESSION ACTIVE — services initialized (polling threads offloaded)");
                 break;
             }
 
@@ -196,19 +208,16 @@ static void handle_incoming_packet(const uint8_t *raw, uint16_t raw_len)
         goto done;
     }
 
-    /* All other services require active session */
     if (!ykp_session_is_active(&g_session)) {
         ESP_LOGW(TAG, "packet received without active session");
         goto done;
     }
 
-    /* Replay check */
     if (!ykp_replay_check(&g_replay, pkt_id)) {
         ESP_LOGW(TAG, "replay attack blocked pkt_id=%lu", (unsigned long)pkt_id);
         goto done;
     }
 
-    /* Decrypt payload if encrypted */
     if ((pkt.header.flags & YKP_FLAG_ENCRYPTED) && pkt.payload) {
         bool ok = ykp_security_decrypt(&g_sec_ctx.session, pkt_id,
                                         raw, YKP_HEADER_SIZE,
@@ -220,7 +229,8 @@ static void handle_incoming_packet(const uint8_t *raw, uint16_t raw_len)
         }
     }
 
-    /* Dispatch to service */
+    dump_decrypted_packet(&pkt);
+
     switch ((ykp_service_t)pkt.header.service_id) {
         case SVC_RELAY:
             relay_service_handle(pkt.payload, pkt.payload_len,
@@ -239,8 +249,7 @@ static void handle_incoming_packet(const uint8_t *raw, uint16_t raw_len)
             break;
 
         case SVC_OTA:
-            ota_service_handle(pkt.payload, pkt.payload_len,
-                                pkt.header.action_id);
+            ota_service_handle(pkt.payload, pkt.payload_len, pkt.header.action_id);
             break;
 
         default:
@@ -249,22 +258,12 @@ static void handle_incoming_packet(const uint8_t *raw, uint16_t raw_len)
     }
 
 done:
-    if (pkt.payload) free(pkt.payload);
+    /* F1 fix: ykp_packet_parse may set pkt.payload = s_rx_payload_buf (static).
+       ykp_packet_free already guards this, but raw free() here does not — use the helper. */
+    if (pkt.payload) ykp_packet_free_payload(&pkt);
 }
 
-/* ── UDP RX callback ─────────────────────────── */
-static void udp_rx_callback(const uint8_t *data, uint16_t len,
-                             struct sockaddr_in *from)
-{
-    /* Check if it's a discovery request */
-    if (len >= 3 && data[4] == SVC_DISCOVERY) {
-        ykp_discovery_handle(data, len, from);
-    } else {
-        handle_incoming_packet(data, len);
-    }
-}
-
-/* ── WS connected callback ───────────────────── */
+/* ── WS callbacks ── */
 static void on_ws_connected(void)
 {
     ESP_LOGI(TAG, "WS connected — sending HELLO");
@@ -282,38 +281,14 @@ static void on_wifi_connected(const char *ip)
 {
     ESP_LOGI(TAG, "WiFi connected, IP=%s — starting SNTP sync", ip);
     
-    // Start SNTP to sync time (required for SSL certificate verification)
     esp_sntp_config_t sntp_config = ESP_NETIF_SNTP_DEFAULT_CONFIG("pool.ntp.org");
     esp_netif_sntp_init(&sntp_config);
     if (esp_netif_sntp_start() == ESP_OK) {
         ESP_LOGI(TAG, "Waiting for time sync...");
         int retry = 0;
         const int retry_count = 10;
-        while (esp_netif_sntp_sync_wait(pdMS_TO_TICKS(1000)) == ESP_ERR_TIMEOUT && ++retry < retry_count) {
-            ESP_LOGI(TAG, "Waiting for system time to be set... (%d/%d)", retry, retry_count);
-        }
-        
-        // Print updated system time
-        time_t now;
-        struct tm timeinfo;
-        time(&now);
-        localtime_r(&now, &timeinfo);
-        char strftime_buf[64];
-        strftime(strftime_buf, sizeof(strftime_buf), "%c", &timeinfo);
-        ESP_LOGI(TAG, "System time synchronized: %s", strftime_buf);
-    } else {
-        ESP_LOGE(TAG, "Failed to start SNTP!");
+        while (esp_netif_sntp_sync_wait(pdMS_TO_TICKS(1000)) == ESP_ERR_TIMEOUT && ++retry < retry_count) {}
     }
-
-    // Start mDNS and register the legacy UDP service
-    mdns_init();
-    mdns_hostname_set("esp32-secure");
-    mdns_instance_name_set("ESP32 Secure Relay");
-    mdns_service_add("RelayService", "_sec-relay", "_udp", 3333, NULL, 0);
-
-    // Start Legacy AES-GCM UDP Server
-    legacy_udp_start();
-
     ykp_ws_connect();
 }
 
@@ -322,153 +297,34 @@ static void on_wifi_disconnected(uint8_t reason)
     ESP_LOGW(TAG, "WiFi disconnected (reason: %d)", reason);
 }
 
-/* ── Main QoS tick task ──────────────────────── */
-static void qos_tick_task(void *arg)
-{
-    while (1) {
-        ykp_qos_tick(&g_qos);
-        vTaskDelay(pdMS_TO_TICKS(500));
-    }
-}
-
 static void connection_manager_task(void *arg)
 {
     char ssid[64] = {0}, password[64] = {0};
     nvs_config_get_wifi_ssid(ssid, sizeof(ssid));
     nvs_config_get_wifi_password(password, sizeof(password));
 
-    // Configure ERROR LED
-    gpio_config_t io_cfg = {
-        .pin_bit_mask = (1ULL << GPIO_ERROR_LED),
-        .mode         = GPIO_MODE_OUTPUT,
-        .pull_up_en   = GPIO_PULLUP_DISABLE,
-        .pull_down_en = GPIO_PULLDOWN_DISABLE,
-        .intr_type    = GPIO_INTR_DISABLE,
-    };
-    gpio_config(&io_cfg);
-    gpio_set_level(GPIO_ERROR_LED, 0);
-
-    // Watchdog configuration
+    /* F3 fix: watchdog registered so we can detect hangs */
     esp_task_wdt_add(NULL);
 
-    uint32_t wifi_disconnected_timer = 0;
-    uint32_t wss_disconnected_timer = 0;
-    bool fallback_active = false;
-    uint32_t ble_hysteresis_timer = 0;
-
-    // Initial async connection
     wifi_manager_connect_async(ssid, password);
 
+    /* F3 fix: count loops; restart after ~3 min if WiFi never connects */
+    uint32_t fail_count = 0;
+    const uint32_t MAX_FAILS = 90; /* 90 * 2s = 180s = 3 min */
     while (1) {
         esp_task_wdt_reset();
-        
-        bool wifi_connected = wifi_manager_is_connected();
-        bool wss_connected = ykp_ws_is_connected();
-        
-        if (wifi_connected) {
-            wifi_disconnected_timer = 0;
-            if (!wss_connected) {
-                wss_disconnected_timer++;
-            } else {
-                wss_disconnected_timer = 0;
+        vTaskDelay(pdMS_TO_TICKS(2000));
+
+        if (!ykp_ws_is_connected()) {
+            fail_count++;
+            if (fail_count >= MAX_FAILS) {
+                ESP_LOGE("conn_mgr", "WiFi/WS not connected after %lu attempts — restarting",
+                         (unsigned long)fail_count);
+                esp_restart();
             }
         } else {
-            wifi_disconnected_timer++;
-            wss_disconnected_timer = 0;
+            fail_count = 0; /* reset counter on successful connect */
         }
-
-        // --- Hysteresis for BLE shutdown ---
-        if (wifi_connected && wss_connected && fallback_active) {
-            ble_hysteresis_timer++;
-            if (ble_hysteresis_timer > 300) { // 5 minutes
-                ykp_ble_provision_stop();
-                fallback_active = false;
-                ble_hysteresis_timer = 0;
-                ESP_LOGI(TAG, "Network stable for 5 mins. Exiting Fallback Mode.");
-            }
-        } else {
-            ble_hysteresis_timer = 0;
-        }
-
-        // --- Check for BLE Fallback Re-Provisioning Success ---
-        if (fallback_active && ykp_ble_provision_is_success()) {
-            ESP_LOGI(TAG, "New Wi-Fi credentials received via BLE Fallback. Restarting to apply...");
-            vTaskDelay(pdMS_TO_TICKS(1000));
-            esp_restart();
-        }
-
-        // --- Wi-Fi Error Fallback Logic ---
-        if (wifi_disconnected_timer > 60) {
-            if (!fallback_active) {
-                ESP_LOGE(TAG, "Wi-Fi timeout! Entering Fallback Mode.");
-                ykp_ble_provision_start();
-                fallback_active = true;
-                
-                // Blink RED LED
-                for(int i=0; i<10; i++) {
-                    gpio_set_level(GPIO_ERROR_LED, 1);
-                    esp_task_wdt_reset();
-                    vTaskDelay(pdMS_TO_TICKS(250));
-                    gpio_set_level(GPIO_ERROR_LED, 0);
-                    vTaskDelay(pdMS_TO_TICKS(250));
-                }
-            }
-            
-            // Diagnostics
-            uint8_t reason = wifi_manager_get_disconnect_reason();
-            if (reason == 204 /*WIFI_REASON_AUTH_EXPIRE*/ || reason == 15 /*4WAY_HANDSHAKE_TIMEOUT*/ || reason == 2 /*AUTH_FAIL*/) {
-                ble_notify_status("{\"status\": \"wifi_error\", \"message\": \"entered password incorrect\"}");
-            } else if (wifi_disconnected_timer > 300) {
-                ble_notify_status("{\"status\": \"wifi_error\", \"message\": \"wifi connection failed try to check router / moderm / repeater\"}");
-            }
-            
-            // Smart Backoff & Scan Logic
-            if (!ykp_ble_is_connected()) {
-                bool should_scan = false;
-                if (wifi_disconnected_timer <= 300) {
-                    if (wifi_disconnected_timer % 10 == 0) should_scan = true;
-                } else if (wifi_disconnected_timer <= 900) {
-                    if (wifi_disconnected_timer % 60 == 0) should_scan = true;
-                } else {
-                    if (wifi_disconnected_timer % 3600 == 0) should_scan = true;
-                }
-                
-                if (should_scan) {
-                    ESP_LOGI(TAG, "Passive scan for SSID: %s", ssid);
-                    if (wifi_manager_scan_for_ssid(ssid)) {
-                        ESP_LOGI(TAG, "SSID found! Attempting reconnect.");
-                        wifi_manager_connect_async(ssid, password);
-                    } else {
-                        ESP_LOGI(TAG, "SSID not found. Back to sleep.");
-                    }
-                }
-            }
-        }
-        
-        // --- WSS Error Fallback Logic ---
-        if (wifi_connected && wss_disconnected_timer > 60) {
-            if (!fallback_active) {
-                ESP_LOGE(TAG, "WSS timeout! Entering Fallback Mode.");
-                ykp_ble_provision_start();
-                fallback_active = true;
-                
-                // Blink BLUE LED
-                for(int i=0; i<10; i++) {
-                    gpio_set_level(GPIO_STATUS_LED, 1);
-                    esp_task_wdt_reset();
-                    vTaskDelay(pdMS_TO_TICKS(250));
-                    gpio_set_level(GPIO_STATUS_LED, 0);
-                    vTaskDelay(pdMS_TO_TICKS(250));
-                }
-            }
-            ble_notify_status("{\"status\": \"wss_error\", \"message\": \"cloud server unreachable\"}");
-            
-            if (wss_disconnected_timer % 60 == 0) {
-                ykp_ws_connect();
-            }
-        }
-
-        vTaskDelay(pdMS_TO_TICKS(1000));
     }
 }
 
@@ -478,20 +334,17 @@ static void connection_manager_task(void *arg)
 void app_main(void)
 {
     ESP_LOGI(TAG, "═══════════════════════════════════════");
-    ESP_LOGI(TAG, "  YKP v5 Firmware %s", YKP_FIRMWARE_VERSION);
+    ESP_LOGI(TAG, "  YKP v5 Firmware (Lightweight Audited)");
     ESP_LOGI(TAG, "═══════════════════════════════════════");
 
-    /* 1. NVS init */
     if (!nvs_config_init()) {
         ESP_LOGE(TAG, "NVS init failed — halting");
         esp_restart();
     }
 
-    /* 2. Increment restart counter */
     uint32_t restarts = nvs_config_incr_restart_count();
     ESP_LOGI(TAG, "Boot count: %lu", (unsigned long)restarts);
 
-    /* 3. Load device identity and check provisioning */
     char temp_ssid[64] = {0};
     char temp_password[64] = {0};
     bool has_id = nvs_config_get_device_id(g_device_id, sizeof(g_device_id));
@@ -499,115 +352,73 @@ void app_main(void)
     bool has_pass = nvs_config_get_wifi_password(temp_password, sizeof(temp_password));
     bool is_provisioned = has_id && has_ssid && has_pass;
 
-    /* Initialize WiFi stack early so BLE can perform Wi-Fi scans! */
     wifi_manager_init();
     wifi_manager_register_callbacks(on_wifi_connected, on_wifi_disconnected);
 
-    /* 0. Power Management Init */
-#if CONFIG_PM_ENABLE
-    esp_pm_config_t pm_config = {
-        .max_freq_mhz = CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ,
-        .min_freq_mhz = 80,
-        .light_sleep_enable = is_provisioned
-    };
-    if (esp_pm_configure(&pm_config) == ESP_OK) {
-        ESP_LOGI(TAG, "Power management configured: max=%dMHz, min=80MHz, light_sleep=%s",
-                 CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ, is_provisioned ? "enabled" : "disabled");
-    } else {
-        ESP_LOGE(TAG, "Power management configuration failed");
-    }
-#endif
-
     if (!is_provisioned) {
-        ESP_LOGW(TAG, "Device not fully provisioned (has_id=%d, has_ssid=%d, has_pass=%d)", has_id, has_ssid, has_pass);
-        ESP_LOGW(TAG, "Starting BLE provisioning manager...");
+        ESP_LOGW(TAG, "Device not provisioned — BLE mode");
         if (ykp_ble_provision_start()) {
-            ESP_LOGI(TAG, "Waiting for BLE provisioning via mobile app...");
             ykp_ble_provision_wait();
-            ESP_LOGI(TAG, "BLE provisioning completed!");
-            vTaskDelay(pdMS_TO_TICKS(1000));
-            esp_restart();
-        } else {
-            ESP_LOGE(TAG, "Failed to start BLE provisioning. Restarting...");
-            vTaskDelay(pdMS_TO_TICKS(2000));
             esp_restart();
         }
     }
 
-    /* Reload device_id in case it was just provisioned via BLE */
     nvs_config_get_device_id(g_device_id, sizeof(g_device_id));
     nvs_config_get_device_type(g_device_type, sizeof(g_device_type));
     nvs_config_get_server_url(g_server_url, sizeof(g_server_url));
-    ESP_LOGI(TAG, "device_id=%s type=%s", g_device_id, g_device_type);
-    ESP_LOGI(TAG, "server=%s", g_server_url);
 
-    /* Initialize mDNS for Local App Discovery */
-    if (g_device_id[0] != '\0') {
-        if (mdns_init() == ESP_OK) {
-            mdns_hostname_set(g_device_id);
-            mdns_instance_name_set(g_device_type);
-            mdns_service_add("YKP-Device", "_http", "_tcp", 80, NULL, 0);
-            ESP_LOGI(TAG, "mDNS initialized successfully. Hostname: %s.local", g_device_id);
-        } else {
-            ESP_LOGE(TAG, "Failed to initialize mDNS!");
-        }
-    }
-
-    /* 4. Security init */
+    /* Initialize security, sessions, and timers */
     if (!ykp_security_init(&g_sec_ctx)) {
         ESP_LOGE(TAG, "security init failed");
         esp_restart();
     }
 
-    /* 5. Session + replay init */
     ykp_session_init(&g_session, &g_sec_ctx);
     ykp_replay_init(&g_replay);
     ykp_qos_init(&g_qos, ykp_send_packet);
 
-    /* 7. WebSocket */
+    /* Allocate QoS software timer in place of background thread */
+    g_qos_timer = xTimerCreate("qos_timer", pdMS_TO_TICKS(500), pdTRUE, NULL, qos_timer_callback);
+    g_qos.timer = g_qos_timer;
+
     ykp_ws_init(g_server_url);
     ykp_ws_register_rx_cb(handle_incoming_packet);
     ykp_ws_register_connected_cb(on_ws_connected);
     ykp_ws_register_disconnected_cb(on_ws_disconnected);
 
-    /* 8. UDP */
-    uint32_t control_port = YKP_CONTROL_PORT;
-    if (nvs_config_get_u32("control_port", &control_port)) {
-        ESP_LOGI(TAG, "Loaded custom UDP control port from NVS: %lu", (unsigned long)control_port);
-    } else {
-        control_port = YKP_CONTROL_PORT;
-    }
-    ykp_udp_init(control_port);
-    ykp_udp_register_rx_cb(udp_rx_callback);
-    ykp_udp_start_rx_task();
-
-    /* 9. Services */
-    relay_service_init(ykp_send_packet);
+    /* Services — pass session context so button ACK has valid IDs (H4 fix) */
+    relay_service_init(ykp_send_packet, &g_session);
     sensor_service_init(ykp_send_packet);
     health_service_init(ykp_send_packet);
     ota_service_init(ykp_send_packet);
-    ykp_discovery_init();
-    ykp_discovery_start_task();
 
-    /* 10. QoS tick task */
-    xTaskCreate(qos_tick_task, "qos_tick", TASK_STACK_QOS, NULL, TASK_PRIO_QOS, NULL);
-
-    /* 11. Start Connection Manager (The Brains) */
+    /* Start connection manager task */
     esp_task_wdt_config_t wdt_config = {
         .timeout_ms = 15000,
         .idle_core_mask = 0,
         .trigger_panic = false,
     };
     esp_task_wdt_init(&wdt_config);
-    xTaskCreate(connection_manager_task, "conn_mgr", 4096, NULL, 5, NULL);
+    xTaskCreatePinnedToCore(connection_manager_task, "conn_mgr", 6144, NULL, 6, &g_conn_mgr_task_handle, 1);
 
-    /* Main loop — Key rotation watchdog feed */
+    /* Main loop — Key rotation and 1-minute health reports */
+    uint32_t health_loop_counter = 0;
     while (1) {
         if (ykp_session_rotation_due(&g_session) && ykp_ws_is_connected()) {
             ESP_LOGI(TAG, "key rotation due — re-authenticating");
             ykp_session_reset(&g_session);
             send_hello();
         }
+
+        health_loop_counter++;
+        if (health_loop_counter >= 12) { // 12 loops * 5s = 60s
+            health_loop_counter = 0;
+            if (ykp_session_is_active(&g_session)) {
+                ESP_LOGI(TAG, "Main loop executing 1-minute health report");
+                health_service_send_report();
+            }
+        }
+
         vTaskDelay(pdMS_TO_TICKS(5000));
     }
 }

@@ -22,8 +22,8 @@
 
 /* Motor Control */
 #define GPIO_MOTOR_PWM          15   /* PWM speed control */
-#define GPIO_MOTOR_DIR_A        16   /* Direction A (CW) */
-#define GPIO_MOTOR_DIR_B        17   /* Direction B (CCW) */
+#define GPIO_MOTOR_DIR_A        25   /* Direction A (CW) - Reassigned from 16 to avoid PSRAM conflict */
+#define GPIO_MOTOR_DIR_B        26   /* Direction B (CCW) - Reassigned from 17 to avoid PSRAM conflict */
 
 /* Battery ADC */
 #define GPIO_BATTERY_ADC        36   /* Battery voltage divider */

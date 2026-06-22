@@ -2,32 +2,59 @@
 #include "nvs_config.h"
 #include <string.h>
 #include <stdlib.h>
-
 #include "esp_log.h"
 #include "esp_random.h"
 #include "ykp_constants.h"
-
-/* PSA Crypto header */
 #include "psa/crypto.h"
+#include "mbedtls/platform.h"
 
 static const char *TAG = "ykp_security";
 
-/* ════════════════════════════════════════════
-   Init — load device keys from NVS
-   ════════════════════════════════════════════ */
+/* Static isolated memory pool for mbedtls to prevent heap fragmentation */
+#define MBEDTLS_POOL_SIZE 8192
+static uint8_t s_mbedtls_pool[MBEDTLS_POOL_SIZE];
+static size_t s_pool_offset = 0;
+
+static void *mbedtls_pool_calloc(size_t n, size_t size)
+{
+    size_t total = n * size;
+    total = (total + 3) & ~3; // Align to 4 bytes
+    if (s_pool_offset + total <= MBEDTLS_POOL_SIZE) {
+        void *ptr = &s_mbedtls_pool[s_pool_offset];
+        s_pool_offset += total;
+        memset(ptr, 0, total);
+        return ptr;
+    }
+    ESP_LOGE(TAG, "Out of memory in static mbedtls pool! (requested %u)", total);
+    return NULL;
+}
+
+static void mbedtls_pool_free(void *ptr)
+{
+    // No-op: we reuse the memory by resetting the pool offset on new handshakes
+}
+
+static inline void write_u32_be(uint8_t *p, uint32_t v) {
+    p[0] = (v >> 24) & 0xFF;
+    p[1] = (v >> 16) & 0xFF;
+    p[2] = (v >>  8) & 0xFF;
+    p[3] =  v        & 0xFF;
+}
+
 bool ykp_security_init(ykp_security_ctx_t *ctx)
 {
     if (!ctx) return false;
     memset(ctx, 0, sizeof(*ctx));
 
-    /* Initialize PSA Crypto */
+    // Register mbedtls platform allocator
+    mbedtls_platform_set_calloc_free(mbedtls_pool_calloc, mbedtls_pool_free);
+
     psa_status_t status = psa_crypto_init();
     if (status != PSA_SUCCESS) {
         ESP_LOGE(TAG, "Failed to initialize PSA crypto: %ld", (long)status);
         return false;
     }
 
-    /* Load device long-term ECDH private key from NVS */
     size_t len = YKP_EC_PRIVKEY_LEN;
     if (!nvs_config_get_blob("private_key", ctx->device_private_key, &len)) {
         ESP_LOGW(TAG, "no private_key in NVS - generating new key pair...");
@@ -54,18 +81,12 @@ bool ykp_security_init(ykp_security_ctx_t *ctx)
         psa_destroy_key(key_id);
     }
 
-    /* Load device public key */
     len = YKP_EC_PUBKEY_LEN;
     nvs_config_get_blob("public_key", ctx->device_public_key, &len);
 
-    /* Load server public key (hardcoded fallback or NVS) */
     len = YKP_EC_PUBKEY_LEN;
-    if (!nvs_config_get_blob("server_pub_key", ctx->server_public_key, &len)) {
-        ESP_LOGW(TAG, "server_pub_key not in NVS — using hardcoded default");
-        /* In production: embed server public key here */
-    }
+    nvs_config_get_blob("server_pub_key", ctx->server_public_key, &len);
 
-    /* OTA verify key = server signing key */
     len = YKP_EC_PUBKEY_LEN;
     nvs_config_get_blob("ota_verify_key", ctx->ota_verify_key, &len);
 
@@ -73,12 +94,12 @@ bool ykp_security_init(ykp_security_ctx_t *ctx)
     return true;
 }
 
-/* ════════════════════════════════════════════
-   Generate ephemeral ECDH key pair
-   ════════════════════════════════════════════ */
 bool ykp_security_gen_ephemeral(ykp_security_ctx_t *ctx)
 {
     if (!ctx) return false;
+
+    // Reset static mbedtls memory pool offset to reuse memory buffers safely
+    s_pool_offset = 0;
 
     psa_key_attributes_t attr = PSA_KEY_ATTRIBUTES_INIT;
     psa_set_key_type(&attr, PSA_KEY_TYPE_ECC_KEY_PAIR(PSA_ECC_FAMILY_SECP_R1));
@@ -109,9 +130,6 @@ fail:
     return false;
 }
 
-/* ════════════════════════════════════════════
-   Derive session key via ECDH + HKDF
-   ════════════════════════════════════════════ */
 bool ykp_security_derive_session_key(ykp_security_ctx_t *ctx,
                                       const uint8_t      *server_ephemeral_pub,
                                       const uint8_t      *nonce,
@@ -120,7 +138,6 @@ bool ykp_security_derive_session_key(ykp_security_ctx_t *ctx,
 {
     if (!ctx || !server_ephemeral_pub || !nonce) return false;
 
-    /* Import our ephemeral private key */
     psa_key_attributes_t attr = PSA_KEY_ATTRIBUTES_INIT;
     psa_set_key_type(&attr, PSA_KEY_TYPE_ECC_KEY_PAIR(PSA_ECC_FAMILY_SECP_R1));
     psa_set_key_bits(&attr, 256);
@@ -168,16 +185,13 @@ bool ykp_security_derive_session_key(ykp_security_ctx_t *ctx,
     }
 
     ctx->session.session_id = session_id;
+    ctx->session.key_ver++; // Increment key rotation version
     ctx->session.active     = true;
 
-    ESP_LOGI(TAG, "session key derived OK, session_id=0x%08lX", (unsigned long)session_id);
+    ESP_LOGI(TAG, "session key derived OK, session_id=0x%08lX (ver=%lu)", (unsigned long)session_id, (unsigned long)ctx->session.key_ver);
     return true;
 }
 
-/* ════════════════════════════════════════════
-   AES-256-GCM Encrypt
-   IV = session_id(4B, BE) || packet_id(4B, BE) || random(4B)
-   ════════════════════════════════════════════ */
 bool ykp_security_encrypt(const ykp_session_keys_t *keys,
                            uint32_t                  packet_id,
                            const uint8_t            *aad,
@@ -188,17 +202,11 @@ bool ykp_security_encrypt(const ykp_session_keys_t *keys,
 {
     if (!keys || !keys->active || !plaintext || !auth_tag_out) return false;
 
-    /* Build 12-byte IV */
+    /* Build 12-byte IV: key_ver (4B) || packet_id (4B) || 0x00000000 */
     uint8_t iv[YKP_GCM_IV_LEN];
-    iv[0]  = (keys->session_id >> 24) & 0xFF;
-    iv[1]  = (keys->session_id >> 16) & 0xFF;
-    iv[2]  = (keys->session_id >>  8) & 0xFF;
-    iv[3]  =  keys->session_id        & 0xFF;
-    iv[4]  = (packet_id >> 24) & 0xFF;
-    iv[5]  = (packet_id >> 16) & 0xFF;
-    iv[6]  = (packet_id >>  8) & 0xFF;
-    iv[7]  =  packet_id        & 0xFF;
-    esp_fill_random(&iv[8], 4);
+    write_u32_be(iv, keys->key_ver);
+    write_u32_be(iv + 4, packet_id);
+    memset(iv + 8, 0, 4);
 
     psa_key_attributes_t attr = PSA_KEY_ATTRIBUTES_INIT;
     psa_set_key_type(&attr, PSA_KEY_TYPE_AES);
@@ -209,31 +217,32 @@ bool ykp_security_encrypt(const ykp_session_keys_t *keys,
     psa_key_id_t key_id;
     if (psa_import_key(&attr, keys->session_key, YKP_AES_KEY_LEN, &key_id) != PSA_SUCCESS) return false;
 
-    uint8_t *out_buf = malloc(plaintext_len + YKP_AUTH_TAG_SIZE);
-    if (!out_buf) {
+    /* In-place zero-copy encrypt using stack buffer instead of dynamic malloc heap allocations */
+    uint8_t stack_buf[256];
+    if (plaintext_len + YKP_AUTH_TAG_SIZE > sizeof(stack_buf)) {
         psa_destroy_key(key_id);
         return false;
     }
 
     size_t out_len;
-    psa_status_t status = psa_aead_encrypt(key_id, PSA_ALG_GCM, iv, YKP_GCM_IV_LEN, aad, aad_len, plaintext, plaintext_len, out_buf, plaintext_len + YKP_AUTH_TAG_SIZE, &out_len);
+    psa_status_t status = psa_aead_encrypt(key_id, PSA_ALG_GCM, iv, YKP_GCM_IV_LEN,
+                                           aad, aad_len,
+                                           plaintext, plaintext_len,
+                                           stack_buf, sizeof(stack_buf),
+                                           &out_len);
     psa_destroy_key(key_id);
 
     if (status != PSA_SUCCESS) {
-        free(out_buf);
         ESP_LOGE(TAG, "gcm_encrypt failed: %ld", (long)status);
         return false;
     }
 
-    memcpy(plaintext, out_buf, plaintext_len);
-    memcpy(auth_tag_out, out_buf + plaintext_len, YKP_AUTH_TAG_SIZE);
-    free(out_buf);
+    /* Split ciphertext and tag */
+    memcpy(plaintext, stack_buf, plaintext_len);
+    memcpy(auth_tag_out, stack_buf + plaintext_len, YKP_AUTH_TAG_SIZE);
     return true;
 }
 
-/* ════════════════════════════════════════════
-   AES-256-GCM Decrypt
-   ════════════════════════════════════════════ */
 bool ykp_security_decrypt(const ykp_session_keys_t *keys,
                            uint32_t                  packet_id,
                            const uint8_t            *aad,
@@ -244,17 +253,11 @@ bool ykp_security_decrypt(const ykp_session_keys_t *keys,
 {
     if (!keys || !keys->active || !ciphertext || !auth_tag) return false;
 
-    /* Reconstruct IV (same derivation as encrypt) */
+    /* Reconstruct 12-byte IV: key_ver (4B) || packet_id (4B) || 0x00000000 */
     uint8_t iv[YKP_GCM_IV_LEN];
-    iv[0] = (keys->session_id >> 24) & 0xFF;
-    iv[1] = (keys->session_id >> 16) & 0xFF;
-    iv[2] = (keys->session_id >>  8) & 0xFF;
-    iv[3] =  keys->session_id        & 0xFF;
-    iv[4] = (packet_id >> 24) & 0xFF;
-    iv[5] = (packet_id >> 16) & 0xFF;
-    iv[6] = (packet_id >>  8) & 0xFF;
-    iv[7] =  packet_id        & 0xFF;
-    /* iv[8..11] was embedded in the packet — extract if needed */
+    write_u32_be(iv, keys->key_ver);
+    write_u32_be(iv + 4, packet_id);
+    memset(iv + 8, 0, 4);
 
     psa_key_attributes_t attr = PSA_KEY_ATTRIBUTES_INIT;
     psa_set_key_type(&attr, PSA_KEY_TYPE_AES);
@@ -265,18 +268,22 @@ bool ykp_security_decrypt(const ykp_session_keys_t *keys,
     psa_key_id_t key_id;
     if (psa_import_key(&attr, keys->session_key, YKP_AES_KEY_LEN, &key_id) != PSA_SUCCESS) return false;
 
-    uint8_t *in_buf = malloc(ciphertext_len + YKP_AUTH_TAG_SIZE);
-    if (!in_buf) {
+    /* Combine ciphertext and tag on a temporary stack buffer to avoid heap fragmentation */
+    uint8_t stack_buf[256];
+    if (ciphertext_len + YKP_AUTH_TAG_SIZE > sizeof(stack_buf)) {
         psa_destroy_key(key_id);
         return false;
     }
-    memcpy(in_buf, ciphertext, ciphertext_len);
-    memcpy(in_buf + ciphertext_len, auth_tag, YKP_AUTH_TAG_SIZE);
+    memcpy(stack_buf, ciphertext, ciphertext_len);
+    memcpy(stack_buf + ciphertext_len, auth_tag, YKP_AUTH_TAG_SIZE);
 
     size_t out_len;
-    psa_status_t status = psa_aead_decrypt(key_id, PSA_ALG_GCM, iv, YKP_GCM_IV_LEN, aad, aad_len, in_buf, ciphertext_len + YKP_AUTH_TAG_SIZE, ciphertext, ciphertext_len, &out_len);
+    psa_status_t status = psa_aead_decrypt(key_id, PSA_ALG_GCM, iv, YKP_GCM_IV_LEN,
+                                           aad, aad_len,
+                                           stack_buf, ciphertext_len + YKP_AUTH_TAG_SIZE,
+                                           ciphertext, ciphertext_len,
+                                           &out_len);
     psa_destroy_key(key_id);
-    free(in_buf);
 
     if (status != PSA_SUCCESS) {
         ESP_LOGW(TAG, "decrypt/auth failed — possible tamper or replay");
@@ -285,9 +292,6 @@ bool ykp_security_decrypt(const ykp_session_keys_t *keys,
     return true;
 }
 
-/* ════════════════════════════════════════════
-   ECDSA Sign (device private key)
-   ════════════════════════════════════════════ */
 bool ykp_security_sign(ykp_security_ctx_t *ctx,
                         const uint8_t      *data,
                         uint16_t            data_len,
@@ -312,9 +316,6 @@ bool ykp_security_sign(ykp_security_ctx_t *ctx,
     return status == PSA_SUCCESS;
 }
 
-/* ════════════════════════════════════════════
-   ECDSA Verify (server OTA key)
-   ════════════════════════════════════════════ */
 bool ykp_security_verify(ykp_security_ctx_t *ctx,
                           const uint8_t      *data,
                           uint16_t            data_len,
@@ -341,9 +342,6 @@ bool ykp_security_verify(ykp_security_ctx_t *ctx,
     return status == PSA_SUCCESS;
 }
 
-/* ════════════════════════════════════════════
-   RNG & SHA-256
-   ════════════════════════════════════════════ */
 bool ykp_security_random(uint8_t *out, uint16_t len)
 {
     esp_fill_random(out, len);

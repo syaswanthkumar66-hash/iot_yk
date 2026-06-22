@@ -21,7 +21,13 @@ bool ykp_replay_check(ykp_replay_ctx_t *ctx, uint32_t pkt_id)
         ykp_replay_init(ctx);
     }
 
-    /* First packet ever — accept unconditionally */
+    /* Reject packet_id=0 — reserved, never a valid TX packet (fix M1) */
+    if (pkt_id == 0) {
+        ESP_LOGW(TAG, "packet_id=0 rejected — reserved ID");
+        return false;
+    }
+
+    /* First packet — accept */
     if (ctx->highest_id == 0 && ctx->window_bits == 0) {
         ctx->highest_id  = pkt_id;
         ctx->window_bits = 1ULL;

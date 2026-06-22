@@ -8,6 +8,19 @@ export default function Groups() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [newName, setNewName] = useState('')
+  const [allDevices, setAllDevices] = useState([])
+
+  const loadDevices = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('devices')
+        .select('device_id, device_name')
+      if (error) throw error
+      setAllDevices(data || [])
+    } catch (e) {
+      console.error('Error fetching devices:', e.message)
+    }
+  }
 
   const loadGroups = async () => {
     try {
@@ -30,6 +43,7 @@ export default function Groups() {
 
   useEffect(() => {
     loadGroups()
+    loadDevices()
 
     // Realtime listener for group changes
     const channel = supabase
@@ -39,12 +53,46 @@ export default function Groups() {
         { event: '*', schema: 'public', table: 'device_groups' },
         () => { loadGroups() }
       )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'devices' },
+        () => { loadDevices() }
+      )
       .subscribe()
 
     return () => {
       supabase.removeChannel(channel)
     }
   }, [])
+
+  const addMember = async (group, deviceId) => {
+    if (group.members.includes(deviceId)) return
+    const nextMembers = [...group.members, deviceId]
+    try {
+      const { error } = await supabase
+        .from('device_groups')
+        .update({ members: nextMembers })
+        .eq('group_id', group.group_id)
+      if (error) throw error
+      setGroups(gs => gs.map(g => g.group_id === group.group_id ? { ...g, members: nextMembers } : g))
+    } catch (err) {
+      console.error('Error adding member:', err)
+    }
+  }
+
+  const removeMember = async (group, deviceId) => {
+    const nextMembers = group.members.filter(m => m !== deviceId)
+    try {
+      const { error } = await supabase
+        .from('device_groups')
+        .update({ members: nextMembers })
+        .eq('group_id', group.group_id)
+      if (error) throw error
+      setGroups(gs => gs.map(g => g.group_id === group.group_id ? { ...g, members: nextMembers } : g))
+    } catch (err) {
+      console.error('Error removing member:', err)
+    }
+  }
 
   const toggleGroup = async (group, turnOn) => {
     const nextAction = turnOn ? 1 : 2 // 1=ON, 2=OFF
@@ -177,15 +225,56 @@ export default function Groups() {
                           borderRadius: 20,
                           fontSize: 12,
                           fontFamily: 'var(--font-mono)',
-                          border: '1px solid rgba(124,111,255,0.2)'
+                          border: '1px solid rgba(124,111,255,0.2)',
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: 6
                         }}
                       >
                         {m}
+                        <button
+                          onClick={() => removeMember(g, m)}
+                          style={{
+                            background: 'none',
+                            border: 'none',
+                            color: 'var(--primary)',
+                            cursor: 'pointer',
+                            fontSize: 10,
+                            padding: 0,
+                            display: 'flex',
+                            alignItems: 'center'
+                          }}
+                        >
+                          ✕
+                        </button>
                       </span>
                     ))
                   ) : (
                     <span style={{ fontSize: 12, color: 'var(--text-muted)', fontStyle: 'italic' }}>No members yet</span>
                   )}
+                </div>
+
+                <div style={{ marginTop: 12 }}>
+                  <select
+                    className="input"
+                    style={{ padding: '4px 8px', fontSize: 12, height: 'auto', width: '100%', background: 'var(--bg-surface)' }}
+                    defaultValue=""
+                    onChange={(e) => {
+                      if (e.target.value) {
+                        addMember(g, e.target.value)
+                        e.target.value = "" // reset select dropdown
+                      }
+                    }}
+                  >
+                    <option value="" disabled>+ Add member device...</option>
+                    {allDevices
+                      .filter(d => !(g.members || []).includes(d.device_id))
+                      .map(d => (
+                        <option key={d.device_id} value={d.device_id}>
+                          {d.device_id} ({d.device_name || 'Generic'})
+                        </option>
+                      ))}
+                  </select>
                 </div>
               </div>
 
