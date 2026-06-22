@@ -585,6 +585,38 @@ static void process_json_command(char *json_part, char *hmac_part) {
                 ble_notify_enqueue(ack_msg);
             }
         }
+        else if (strcmp(cmd, "send_creds") == 0) {
+            cJSON *ssid = cJSON_GetObjectItem(root, "ssid");
+            cJSON *psk = cJSON_GetObjectItem(root, "psk");
+            cJSON *host = cJSON_GetObjectItem(root, "host");
+            cJSON *port = cJSON_GetObjectItem(root, "port");
+            cJSON *uport = cJSON_GetObjectItem(root, "udp_port");
+            if (ssid && psk && host && port) {
+                if (session_mutex) xSemaphoreTake(session_mutex, portMAX_DELAY);
+                strncpy(s_session.temp_ssid, ssid->valuestring, sizeof(s_session.temp_ssid) - 1);
+                strncpy(s_session.temp_psk, psk->valuestring, sizeof(s_session.temp_psk) - 1);
+                strncpy(s_session.temp_host, host->valuestring, sizeof(s_session.temp_host) - 1);
+                s_session.temp_port = port->valueint;
+                s_session.temp_udp_port = uport ? uport->valueint : 47808;
+                uint32_t nonce = esp_random();
+                snprintf(s_session.udp_nonce, sizeof(s_session.udp_nonce), "%08lx%08lx", (unsigned long)s_session.session_id, (unsigned long)nonce);
+                s_session.nonce_valid = true;
+                char udp_nonce_copy[33];
+                strcpy(udp_nonce_copy, s_session.udp_nonce);
+                uint32_t s_id = s_session.session_id;
+                prov_session_update_crc();
+                if (session_mutex) xSemaphoreGive(session_mutex);
+                
+                snprintf(ack_msg, sizeof(ack_msg), "{\"status\":\"creds_ok\",\"udp_nonce\":\"%s\",\"session_id\":\"%lu\",\"seq\":%lu}", 
+                         udp_nonce_copy, (unsigned long)s_id, (unsigned long)current_seq);
+                ble_notify_enqueue(ack_msg);
+            }
+        }
+        else if (strcmp(cmd, "rescan") == 0) {
+            snprintf(ack_msg, sizeof(ack_msg), "{\"ack\":\"rescan\",\"status\":\"ok\",\"seq\":%lu}", (unsigned long)current_seq);
+            ble_notify_enqueue(ack_msg);
+            xTaskCreatePinnedToCore(wifi_scan_task, "wifi_scan", 4096, NULL, 5, NULL, 1);
+        }
         else if (strcmp(cmd, "set_cert") == 0) {
             cJSON *chunk_idx = cJSON_GetObjectItem(root, "chunk");
             cJSON *data = cJSON_GetObjectItem(root, "data");
